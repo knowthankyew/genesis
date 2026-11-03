@@ -14,6 +14,7 @@ type SkipNode struct {
 	Timestamp int64
 	ID        uint64
 	forward   []*SkipNode
+	prev      *SkipNode // Doubly linked on level 0 for O(1) reverse traversal
 }
 
 // SkipList without internal lock - intended to be protected by partition lock.
@@ -75,10 +76,18 @@ func (sl *SkipList) Insert(timestamp int64, id uint64) {
 		newNode.forward[i] = update[i].forward[i]
 		update[i].forward[i] = newNode
 	}
+
+	// Maintain doubly linked list on level 0
+	newNode.prev = update[0]
+	if newNode.forward[0] != nil {
+		newNode.forward[0].prev = newNode
+	}
+
 	sl.length++
 }
 
-func (sl *SkipList) ScanRange(start, end int64, fn func(id uint64) bool) {
+// ScanRangeAsc walks nodes in [start, end] in strictly ascending (Timestamp, ID) order.
+func (sl *SkipList) ScanRangeAsc(start, end int64, fn func(id uint64, ts int64) bool) {
 	current := sl.head
 
 	for i := sl.level - 1; i >= 0; i-- {
@@ -89,20 +98,37 @@ func (sl *SkipList) ScanRange(start, end int64, fn func(id uint64) bool) {
 
 	current = current.forward[0]
 	for current != nil && current.Timestamp <= end {
-		if !fn(current.ID) {
+		if !fn(current.ID, current.Timestamp) {
 			break
 		}
 		current = current.forward[0]
 	}
 }
 
-func (sl *SkipList) Range(start, end int64) []uint64 {
-	var result []uint64
-	sl.ScanRange(start, end, func(id uint64) bool {
-		result = append(result, id)
-		return true
+// ScanRangeDesc walks nodes in [start, end] in strictly descending (Timestamp, ID) order.
+func (sl *SkipList) ScanRangeDesc(start, end int64, fn func(id uint64, ts int64) bool) {
+	current := sl.head
+
+	// Binary jump to the largest node <= end
+	for i := sl.level - 1; i >= 0; i-- {
+		for current.forward[i] != nil && current.forward[i].Timestamp <= end {
+			current = current.forward[i]
+		}
+	}
+
+	for current != nil && current != sl.head && current.Timestamp >= start {
+		if !fn(current.ID, current.Timestamp) {
+			break
+		}
+		current = current.prev
+	}
+}
+
+// ScanRange maintains compatibility with original signature
+func (sl *SkipList) ScanRange(start, end int64, fn func(id uint64) bool) {
+	sl.ScanRangeAsc(start, end, func(id uint64, ts int64) bool {
+		return fn(id)
 	})
-	return result
 }
 
 // EvictOldest removes up to `count` oldest entries from the head of the SkipList and returns their IDs.
@@ -122,6 +148,11 @@ func (sl *SkipList) EvictOldest(count int) []uint64 {
 				sl.head.forward[i] = nodeToEvict.forward[i]
 			}
 		}
+
+		if nodeToEvict.forward[0] != nil {
+			nodeToEvict.forward[0].prev = sl.head
+		}
+
 		sl.length--
 	}
 

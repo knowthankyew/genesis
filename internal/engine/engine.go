@@ -26,6 +26,7 @@ type EngineConfig struct {
 	PriorityQueueCap int
 	NumWorkers       int
 	MaxLineLength    int
+	BucketDuration   int64
 }
 
 type DroppedStats struct {
@@ -82,8 +83,14 @@ func NewEngine(cfg EngineConfig) *Engine {
 		cfg.MaxLineLength = parser.DefaultMaxLineLength
 	}
 
+	bucketDuration := cfg.BucketDuration
+	if bucketDuration <= 0 {
+		bucketDuration = 5 // default 5s partitions
+	}
+
 	idx := index.NewStoreIndex(index.IndexConfig{
-		MaxMemoryBytes: cfg.MaxMemoryBytes,
+		MaxMemoryBytes:    cfg.MaxMemoryBytes,
+		BucketDurationSec: bucketDuration,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

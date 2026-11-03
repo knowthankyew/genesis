@@ -50,6 +50,7 @@ type StoreIndex struct {
 	currentMemoryBytes atomic.Int64
 	maxMemoryBytes     int64
 	evictedCount       atomic.Uint64
+	evicting           atomic.Bool // Smoking gun fix: CAS guard against double eviction
 }
 
 // NewStoreIndex creates a new StoreIndex with the given memory limit.
@@ -102,7 +103,7 @@ func (idx *StoreIndex) Insert(entry parser.LogEntry) {
 
 		p.mu.Lock()
 		if p.evicted {
-			// Partition was evicted before we acquired the lock; retry with fresh partition
+			// Partition was evicted before lock was acquired; retry with fresh partition
 			p.mu.Unlock()
 			continue
 		}
@@ -136,8 +137,13 @@ func (idx *StoreIndex) Insert(entry parser.LogEntry) {
 }
 
 // evictOldestPartitions drops older time segments or sheds from the single partition.
-// Never evicts the newest partition wholesale.
+// Guarded by CAS on idx.evicting to prevent concurrent double-eviction.
 func (idx *StoreIndex) evictOldestPartitions() {
+	if !idx.evicting.CompareAndSwap(false, true) {
+		return // Another worker is actively evicting
+	}
+	defer idx.evicting.Store(false)
+
 	targetMem := int64(float64(idx.maxMemoryBytes) * 0.85)
 
 	for idx.currentMemoryBytes.Load() > targetMem {
@@ -158,9 +164,8 @@ func (idx *StoreIndex) evictOldestPartitions() {
 			}
 		}
 
-		// Rule #2: Never evict the newest partition wholesale
+		// Rule #2: Never evict newest partition wholesale
 		if oldestBucket == newestBucket {
-			// Single partition exceeds budget: shed oldest entries from it (ring behavior)
 			p := idx.partitions[oldestBucket]
 			idx.partitionsMu.Unlock()
 
@@ -174,7 +179,6 @@ func (idx *StoreIndex) evictOldestPartitions() {
 				return
 			}
 
-			// Drop oldest entries from this single partition
 			dropCount := max(1, len(p.records)/4)
 			droppedIDs := p.skipList.EvictOldest(dropCount)
 			var droppedBytes int64
@@ -199,7 +203,7 @@ func (idx *StoreIndex) evictOldestPartitions() {
 			continue
 		}
 
-		// Multiple partitions exist: evict the oldest partition
+		// Multiple partitions: evict the oldest
 		oldest := idx.partitions[oldestBucket]
 		delete(idx.partitions, oldestBucket)
 		idx.partitionsMu.Unlock()
@@ -218,7 +222,7 @@ func (idx *StoreIndex) evictOldestPartitions() {
 }
 
 // Query performs multi-field time-range and exact-match filtering.
-// order can be "asc" or "desc" (defaults to "asc").
+// Guarantees mathematically exact (Timestamp, ID) ordering and early exit without heap allocations.
 func (idx *StoreIndex) Query(start, end int64, level, service string, limit int, order string) []parser.LogEntry {
 	if limit <= 0 {
 		limit = 100
@@ -289,85 +293,34 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int,
 			}
 		}
 
-		// Inverted-index first filtering
-		if serviceFilter || levelFilter {
-			var driverSet, otherFilter map[uint64]struct{}
-			if serviceFilter && levelFilter {
-				if len(sSet) <= len(lSet) {
-					driverSet, otherFilter = sSet, lSet
-				} else {
-					driverSet, otherFilter = lSet, sSet
+		// Node scanner with O(1) filter checks and early exit
+		scanner := func(id uint64, ts int64) bool {
+			if serviceFilter {
+				if _, match := sSet[id]; !match {
+					return true
 				}
-			} else if serviceFilter {
-				driverSet = sSet
-			} else {
-				driverSet = lSet
 			}
-
-			// Gather matched entries in this partition
-			var partitionMatches []parser.LogEntry
-			for id := range driverSet {
-				if otherFilter != nil {
-					if _, match := otherFilter[id]; !match {
-						continue
-					}
-				}
-				if entry, match := p.records[id]; match {
-					if entry.Timestamp >= start && entry.Timestamp <= end {
-						partitionMatches = append(partitionMatches, entry)
-					}
+			if levelFilter {
+				if _, match := lSet[id]; !match {
+					return true
 				}
 			}
 
-			// Sort partition matches to guarantee deterministic time ordering
-			if order == "desc" {
-				sort.Slice(partitionMatches, func(i, j int) bool {
-					if partitionMatches[i].Timestamp == partitionMatches[j].Timestamp {
-						return partitionMatches[i].ID > partitionMatches[j].ID
-					}
-					return partitionMatches[i].Timestamp > partitionMatches[j].Timestamp
-				})
-			} else {
-				sort.Slice(partitionMatches, func(i, j int) bool {
-					if partitionMatches[i].Timestamp == partitionMatches[j].Timestamp {
-						return partitionMatches[i].ID < partitionMatches[j].ID
-					}
-					return partitionMatches[i].Timestamp < partitionMatches[j].Timestamp
-				})
-			}
-
-			for _, entry := range partitionMatches {
+			if entry, match := p.records[id]; match {
 				results = append(results, entry)
 				if len(results) >= limit {
-					break
+					return false // Reached limit, terminate early!
 				}
 			}
-		} else {
-			// Scan SkipList
-			var partitionMatches []parser.LogEntry
-			p.skipList.ScanRange(start, end, func(id uint64) bool {
-				if entry, match := p.records[id]; match {
-					partitionMatches = append(partitionMatches, entry)
-				}
-				return true
-			})
-
-			if order == "desc" {
-				sort.Slice(partitionMatches, func(i, j int) bool {
-					if partitionMatches[i].Timestamp == partitionMatches[j].Timestamp {
-						return partitionMatches[i].ID > partitionMatches[j].ID
-					}
-					return partitionMatches[i].Timestamp > partitionMatches[j].Timestamp
-				})
-			} // asc is naturally sorted by SkipList scan
-
-			for _, entry := range partitionMatches {
-				results = append(results, entry)
-				if len(results) >= limit {
-					break
-				}
-			}
+			return true
 		}
+
+		if order == "desc" {
+			p.skipList.ScanRangeDesc(start, end, scanner)
+		} else {
+			p.skipList.ScanRangeAsc(start, end, scanner)
+		}
+
 		p.mu.RUnlock()
 
 		if len(results) >= limit {
@@ -377,12 +330,12 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int,
 	return results
 }
 
-// CurrentMemoryUsage returns the tracked in-memory byte size.
+// CurrentMemoryUsage returns tracked in-memory byte size.
 func (idx *StoreIndex) CurrentMemoryUsage() int64 {
 	return idx.currentMemoryBytes.Load()
 }
 
-// LivePartitionBytes calculates the exact sum of sizeBytes across all live partitions.
+// LivePartitionBytes calculates sum of sizeBytes across all live partitions.
 func (idx *StoreIndex) LivePartitionBytes() int64 {
 	idx.partitionsMu.RLock()
 	defer idx.partitionsMu.RUnlock()

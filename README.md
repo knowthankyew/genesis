@@ -1,33 +1,34 @@
 # Genesis: High-Throughput In-Memory Log Engine
 
-> [!WARNING]
-> ⚠️ **Under audit.** Performance claims below are unverified; see [docs/origin/03-review.md](docs/origin/03-review.md).
-
-[![Go Report Card](https://goreportcard.com/badge/github.com/knowthankyew/project-genesis)](https://goreportcard.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go Version](https://img.shields.io/badge/Go-1.24%2B-00ADD8.svg)](go.mod)
 
-Genesis is a zero-dependency, memory-bounded telemetry and log aggregation engine written in Go. It provides ultra-high-throughput ingestion across TCP/UDP streams, zero-copy structured parsing, and sub-millisecond multi-field time-range querying under strict heap limits.
-
----
-
-## What Is Genesis?
-
-In modern cloud computing, applications generate tens of thousands of log lines every second. Most teams rely on heavy enterprise clusters (like Elasticsearch, Splunk, or Grafana Loki) to ingest and search them. While powerful, these systems often require gigabytes of RAM, complex configuration, and significant CPU overhead.
-
-**Genesis is the opposite:** a hyper-compact, single-binary engine engineered to ingest over **700,000 logs per second** on modest hardware, store them in a time-partitioned in-memory index, and respond to analytical queries in **microseconds**—all while enforcing a strict memory ceiling (e.g., 512 MB).
+Genesis is a zero-dependency, memory-bounded telemetry and log aggregation engine written in Go. It provides high-throughput ingestion across live TCP and UDP streams, zero-copy structured parsing, and sub-millisecond query retrieval under strict memory limits.
 
 ---
 
-## Practical Applications
+## Origin
 
-Genesis is designed for situations where heavy logging stacks are impractical:
+Genesis originated from an unprompted, highly detailed systems design challenge generated out of nowhere by Gemini Web. An initial implementation was quickly constructed, self-evaluated, and reported to have passed all gates, but an independent peer review revealed that the first benchmark tested an idealized in-process problem rather than the real-world network and concurrency constraints. To transform the prototype into a trustworthy engineering asset, the project underwent an audit to eliminate race conditions, add property-based oracle testing, and enforce calibrated heap bounding. The project now adheres strictly to the rule: *claims are measured, not asserted*. Full provenance documents—including the original challenge, self-report, and audit—are preserved in [`docs/origin/`](docs/origin/).
 
-1. **Local Developer & CI/CD Telemetry Sidecar:**
-   Instead of spinning up heavy Docker containers (ELK or Loki) that consume 2GB+ RAM during integration testing, Genesis boots in under 5 milliseconds with ~10MB baseline RAM, captures all service streams, and allows immediate query verification.
-2. **Edge Computing & IoT Gateways:**
-   On memory-constrained nodes (e.g., Raspberry Pi, industrial edge controllers) where flash storage write cycles must be preserved, Genesis maintains a bounded in-memory circular telemetry buffer with zero disk wear, guaranteeing critical `ERROR` events are never dropped during network congestion.
-3. **High-Performance Concurrency Reference:**
-   Serves as a clean, idiomatic case study in zero-allocation string parsing, partitioned concurrent SkipLists, inverted index intersections, and lock-free/striped concurrency in Go.
+---
+
+## Verified Benchmarks
+
+The figures below were produced by the standalone load generator `cmd/genesis-bench` driving a live server process over network sockets (50 concurrent TCP clients streaming logs for 60 seconds with concurrent HTTP analytical queries). Full hardware environment and telemetry details are committed in [`docs/benchmarks/2026-11-02-09b5dd9.md`](docs/benchmarks/2026-11-02-09b5dd9.md).
+
+| Metric | Target | Measured Result | Status |
+| :--- | :--- | :--- | :--- |
+| **Ingestion Throughput** | $\ge \text{50,000 lines/sec}$ over 60s | **293,458.51 lines/sec** indexed | ✅ **PASSED** |
+| **Read Query Latency (P50)** | — | **369.34 µs** | **SUB-MILLISECOND** |
+| **Read Query Latency (P90)** | — | **4.37 ms** | **SUB-5MS** |
+| **Read Query Latency (P99)** | $< \text{5.0 ms}$ | **60.66 ms** | ❌ **MISSED TARGET** |
+| **Memory Ceiling** | Plateau $\le \text{512 MB}$ | **285.05 MB** (Peak: 426.77 MB) | ✅ **PASSED** |
+| **Idle TCP Connections** | 10,000 connections | **10,000 held simultaneously** | ✅ **PASSED** |
+| **Data Race Safety** | 0 races under `-race` | **0 data races detected** | ✅ **PASSED** |
+| **Query Correctness (Oracle)**| 1,000 random queries | **100% exact match** vs brute-force | ✅ **PASSED** |
+
+> **Diagnosis on P99 Latency:** While P50 (369 µs) and P90 (4.37 ms) remain well within the sub-5ms window, the 99th percentile reaches 60.66 ms under saturation. Under 293,000 writes/second across 50 clients, 99th-percentile queries contend for read-locks while Go runtime garbage collection cycles sweep evicted time partitions.
 
 ---
 
@@ -36,10 +37,10 @@ Genesis is designed for situations where heavy logging stacks are impractical:
 ```
                         [ Ingestion Pipeline ]
   TCP (:9000) ──┐
-                ├──► [ Ingest() ] ──► Normal Bounded Channel (200k) ──┐
+                ├──► [ Ingest() ] ──► Normal Bounded Channel (250k) ──┐
   UDP (:9001) ──┘           │                                         │
-                       (Backpressure)                                 ▼
-                            │                                [ Worker Pool ]
+                       (Level Check)                                  ▼
+                            │                                [ 32 Worker Pool ]
                             └──► Priority Channel (50k) ────► (Zero-Copy Parser)
                                 (Guaranteed delivery for              │
                                  ERROR / FATAL logs)                  ▼
@@ -52,113 +53,75 @@ Genesis is designed for situations where heavy logging stacks are impractical:
                                                                  ▲
                                                                  │
                                                         [ HTTP Query API ]
-                                                            (:8080/query)
+                                                       (:8080/query, /stats)
 ```
 
-### Key Technical Mechanisms
+### Core Concurrency & Storage Primitives
 
-* **Zero-Copy Parsing:** Direct byte-slice parsing of incoming byte streams without heap string re-allocation for timestamps, log levels, and known service names.
-* **Dual-Queue Backpressure:** Under network saturation, normal logs (`INFO`, `DEBUG`) apply non-blocking backpressure, while critical failure events (`ERROR`, `FATAL`) route into a dedicated non-dropping priority buffer.
-* **Time-Partitioned Concurrent SkipList:** Partitioned by time buckets with independent `sync.RWMutex` locks, eliminating global lock contention between writers and query readers.
-* **Inverted-Index-First Filtering:** Intersects `LogLevel` and `ServiceName` buckets *before* the time-range scan, shrinking query candidate pools by orders of magnitude and keeping P99 read latencies under 3 milliseconds.
-* **Segment Eviction:** Drops the oldest time-bucket partitions in $O(1)$ when the memory ceiling is reached.
-
----
-
-## Verified Benchmarks
-
-Stress-tested using 50 concurrent client simulators pushing live traffic concurrently with analytical queries (`go test -race`):
-
-| Metric | Target | Genesis Result | Status |
-| :--- | :--- | :--- | :--- |
-| **Ingestion Throughput** | $\ge \text{50,000 logs/sec}$ | **727,399 logs/sec** (raw)<br>**209,347 logs/sec** (with `-race`) | **PASSED (14.5x target)** |
-| **P50 Query Latency** | — | **14.7 µs** (raw) / **77.9 µs** (race) | **SUB-MILLISECOND** |
-| **P90 Query Latency** | — | **321.8 µs** (raw) / **682.2 µs** (race) | **SUB-MILLISECOND** |
-| **P99 Query Latency** | $< \text{5.0 ms}$ | **2.55 ms** | **PASSED** |
-| **Data Race Safety** | 0 races under `-race` | **0 race conditions detected** | **PASSED** |
-| **Memory Ceiling** | Bounded ($\le \text{512 MB}$) | **Stable segment eviction** | **PASSED** |
+1. **Dual-Queue Backpressure:** Routes logs based on the parsed `LogLevel` (not substrings). When the normal ingestion queue saturates, standard traffic experiences non-blocking backpressure while `ERROR` and `FATAL` logs route into a priority lane drained completely on server shutdown.
+2. **Time-Partitioned Concurrent SkipList:** Data is partitioned into 5-second buckets with independent `sync.RWMutex` locks, eliminating write lock contention on historical buckets during analytical querying.
+3. **Double-Eviction & Drift Protection:** Employs atomic CAS guards during eviction, preventing concurrent over-eviction races and eliminating memory accounting drift.
+4. **Bi-directional Time Scanning:** Level-0 pointers in the SkipList are doubly-linked, enabling $O(\log N + \text{limit})$ forward (`order=asc`) and reverse (`order=desc`) deterministic traversal without post-hoc sorting.
 
 ---
 
 ## Getting Started
 
-### Prerequisites
-
-* Go 1.22+ (or Docker)
-
-### Build and Run
+### Build from Source
 
 ```bash
-# Clone the repository
-git clone https://github.com/knowthankyew/project-genesis.git
-cd project-genesis
-
-# Build the server binary
+# Build server and benchmark binaries
 make build
 
-# Start Genesis
-./bin/genesis-server -tcp=:9000 -udp=:9001 -http=:8080 -max-mem-mb=512
+# Start the Genesis server (default: 127.0.0.1:9000 TCP, 127.0.0.1:8080 HTTP)
+./bin/genesis -tcp=127.0.0.1:9000 -udp=127.0.0.1:9001 -http=127.0.0.1:8080 -max-mem-mb=350
 ```
 
-### Ingestion Protocol
+### Ingestion
 
-Send pipe-delimited log lines to TCP port 9000 or UDP port 9001:
-
+Send pipe-delimited log lines over TCP or UDP:
 ```text
 <timestamp>|<service>|<level>|<trace_id>|<message>
 ```
 
-**Example:**
 ```bash
-echo "1730000000|auth-api|ERROR|trace-9912|Database connection timeout" | nc localhost 9000
+echo "1730000000|auth-api|ERROR|trace-9912|Database connection timeout" | nc 127.0.0.1 9000
 ```
 
-### Querying Logs
+### Querying
 
-Query logs over HTTP:
-
+Query structured logs over HTTP:
 ```bash
-# Query ERROR logs from auth-api within a time window
-curl -G "http://localhost:8080/query" \
+curl -G "http://127.0.0.1:8080/query" \
   --data-urlencode "start=1730000000" \
   --data-urlencode "end=1730003600" \
   --data-urlencode "service=auth-api" \
   --data-urlencode "level=ERROR" \
-  --data-urlencode "limit=50"
+  --data-urlencode "limit=50" \
+  --data-urlencode "order=desc"
 ```
 
-**Response Format:**
-```json
-{
-  "count": 1,
-  "latency_us": 42,
-  "logs": [
-    {
-      "id": 1,
-      "timestamp": 1730000000,
-      "service": "auth-api",
-      "level": "ERROR",
-      "trace_id": "trace-9912",
-      "message": "Database connection timeout",
-      "size_bytes": 128
-    }
-  ]
-}
+Inspect live server metrics and memory:
+```bash
+curl http://127.0.0.1:8080/stats
 ```
 
 ---
 
-## Running Verification Tests
+## Verification & Benchmarks
 
 ```bash
-# Run unit tests
+# Run unit and regression tests
 make test
 
 # Run race detector tests
 make race
 
-# Run benchmark verification gates
-make bench
+# Run linter
+make lint
+
+# Run official 60s benchmark harness and generate report
+make bench-report
 ```
 
 ---

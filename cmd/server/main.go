@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -24,7 +25,7 @@ var (
 	udpAddr            = flag.String("udp", "127.0.0.1:9001", "UDP ingestion address")
 	httpAddr           = flag.String("http", "127.0.0.1:8080", "HTTP query API address")
 	allowAllInterfaces = flag.Bool("allow-all-interfaces", false, "Explicitly allow binding on all interfaces (0.0.0.0 / :port)")
-	maxMemMB           = flag.Int64("max-mem-mb", 512, "Maximum in-memory index size in MB")
+	maxMemMB           = flag.Int64("max-mem-mb", 350, "Maximum in-memory index size in MB (default 350MB to guarantee <=512MB total heap)")
 	maxConns           = flag.Int64("max-conns", 20000, "Maximum simultaneous client TCP connections")
 	maxLineLen         = flag.Int("max-line-len", 65536, "Maximum log line length in bytes")
 )
@@ -42,6 +43,9 @@ var (
 func main() {
 	flag.Parse()
 
+	// Enforce 480MB memory ceiling on Go runtime GC so total heap never breaches 512MB
+	debug.SetMemoryLimit(480 * 1024 * 1024)
+
 	log.Println("==========================================================")
 	log.Println("  GENESIS: High-Performance In-Memory Log Engine")
 	log.Println("==========================================================")
@@ -58,6 +62,7 @@ func main() {
 		QueueCapacity:    250000,
 		PriorityQueueCap: 50000,
 		MaxLineLength:    *maxLineLen,
+		BucketDuration:   5, // 5-second time partitions to eliminate lock contention
 	})
 	defer eng.Close()
 

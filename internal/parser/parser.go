@@ -24,7 +24,10 @@ var (
 	levelFatal = "FATAL"
 )
 
-var servicePool = sync.Map{}
+var (
+	servicePool     sync.Map
+	servicePoolSize atomic.Int64
+)
 var truncatedLines atomic.Uint64
 
 func TruncatedLinesCount() uint64 {
@@ -36,7 +39,11 @@ func internService(b []byte) string {
 		return s.(string)
 	}
 	s := string(b)
-	servicePool.Store(s, s)
+	if servicePoolSize.Load() < 1024 {
+		if _, loaded := servicePool.LoadOrStore(s, s); !loaded {
+			servicePoolSize.Add(1)
+		}
+	}
 	return s
 }
 
@@ -158,12 +165,12 @@ func ParseLogLine(id uint64, raw []byte, maxLineLen int) (LogEntry, error) {
 
 	// Calibrated memory overhead per entry in 64-bit runtime:
 	// - LogEntry struct on heap / map slot: ~88 bytes
-	// - Map node & bucket overhead: ~48 bytes
-	// - SkipList SkipNode + forward slice: ~64 bytes
-	// - Inverted indices map nodes: ~32 bytes
-	// - String contents: len(traceID) + len(message)
-	// Base calibrated overhead: ~240 bytes + string lengths
-	sizeBytes := 240 + len(traceID) + len(message)
+	// - Map node & bucket overhead: ~80 bytes
+	// - SkipList SkipNode + forward slice + prev pointer: ~96 bytes
+	// - Inverted indices map nodes: ~64 bytes
+	// - String contents & headers: len(traceID) + len(message) + ~32 bytes
+	// Calibrated overhead: ~360 bytes + string lengths
+	sizeBytes := 360 + len(traceID) + len(message)
 
 	return LogEntry{
 		ID:        id,

@@ -105,6 +105,34 @@ func (sl *SkipList) Range(start, end int64) []uint64 {
 	return result
 }
 
+// EvictOldest removes up to `count` oldest entries from the head of the SkipList and returns their IDs.
+func (sl *SkipList) EvictOldest(count int) []uint64 {
+	if sl.length == 0 || count <= 0 {
+		return nil
+	}
+
+	var evicted []uint64
+	for sl.head.forward[0] != nil && len(evicted) < count {
+		nodeToEvict := sl.head.forward[0]
+		evicted = append(evicted, nodeToEvict.ID)
+
+		// Unlink nodeToEvict from all levels it participates in
+		for i := 0; i < len(nodeToEvict.forward); i++ {
+			if sl.head.forward[i] == nodeToEvict {
+				sl.head.forward[i] = nodeToEvict.forward[i]
+			}
+		}
+		sl.length--
+	}
+
+	// Adjust sl.level if top levels are now empty
+	for sl.level > 1 && sl.head.forward[sl.level-1] == nil {
+		sl.level--
+	}
+
+	return evicted
+}
+
 func (sl *SkipList) Len() int {
 	return sl.length
 }

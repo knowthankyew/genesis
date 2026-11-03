@@ -25,6 +25,7 @@ type Partition struct {
 	levelIndex   map[string]map[uint64]struct{}
 	records      map[uint64]parser.LogEntry
 	sizeBytes    int64
+	evicted      bool
 }
 
 func newPartition(bucketID, bucketDuration int64) *Partition {
@@ -48,20 +49,19 @@ type StoreIndex struct {
 
 	currentMemoryBytes atomic.Int64
 	maxMemoryBytes     int64
-	evicting           atomic.Bool
+	evictedCount       atomic.Uint64
 }
 
 // NewStoreIndex creates a new StoreIndex with the given memory limit.
 func NewStoreIndex(cfg IndexConfig) *StoreIndex {
 	maxMem := cfg.MaxMemoryBytes
 	if maxMem <= 0 {
-		maxMem = 512 * 1024 * 1024 // default 512MB
+		maxMem = 512 * 1024 * 1024
 	}
 	bucketSec := cfg.BucketDurationSec
 	if bucketSec <= 0 {
-		bucketSec = 60 // 60-second partitions
+		bucketSec = 60
 	}
-
 	return &StoreIndex{
 		partitions:     make(map[int64]*Partition),
 		bucketDuration: bucketSec,
@@ -89,45 +89,54 @@ func (idx *StoreIndex) getOrCreatePartition(bucketID int64) *Partition {
 }
 
 // Insert adds a LogEntry to the matching time-partitioned index.
-// Automatically evicts the oldest time-bucket segment if memory ceiling is breached.
+// Handles eviction and guarantees no race condition with evicted partitions.
 func (idx *StoreIndex) Insert(entry parser.LogEntry) {
-	// If memory ceiling breached, evict older segments to stay within bounds
 	if idx.currentMemoryBytes.Load() >= idx.maxMemoryBytes {
 		idx.evictOldestPartitions()
 	}
 
 	bucketID := entry.Timestamp / idx.bucketDuration
-	p := idx.getOrCreatePartition(bucketID)
 
-	p.mu.Lock()
-	p.records[entry.ID] = entry
-	p.sizeBytes += int64(entry.SizeBytes)
-	p.skipList.Insert(entry.Timestamp, entry.ID)
+	for {
+		p := idx.getOrCreatePartition(bucketID)
 
-	// Inverted indices inside partition
-	if entry.Service != "" {
-		sMap, ok := p.serviceIndex[entry.Service]
-		if !ok {
-			sMap = make(map[uint64]struct{})
-			p.serviceIndex[entry.Service] = sMap
+		p.mu.Lock()
+		if p.evicted {
+			// Partition was evicted before we acquired the lock; retry with fresh partition
+			p.mu.Unlock()
+			continue
 		}
-		sMap[entry.ID] = struct{}{}
-	}
 
-	if entry.Level != "" {
-		lMap, ok := p.levelIndex[entry.Level]
-		if !ok {
-			lMap = make(map[uint64]struct{})
-			p.levelIndex[entry.Level] = lMap
+		p.records[entry.ID] = entry
+		p.sizeBytes += int64(entry.SizeBytes)
+		p.skipList.Insert(entry.Timestamp, entry.ID)
+
+		if entry.Service != "" {
+			sMap, ok := p.serviceIndex[entry.Service]
+			if !ok {
+				sMap = make(map[uint64]struct{})
+				p.serviceIndex[entry.Service] = sMap
+			}
+			sMap[entry.ID] = struct{}{}
 		}
-		lMap[entry.ID] = struct{}{}
-	}
-	p.mu.Unlock()
 
-	idx.currentMemoryBytes.Add(int64(entry.SizeBytes))
+		if entry.Level != "" {
+			lMap, ok := p.levelIndex[entry.Level]
+			if !ok {
+				lMap = make(map[uint64]struct{})
+				p.levelIndex[entry.Level] = lMap
+			}
+			lMap[entry.ID] = struct{}{}
+		}
+		p.mu.Unlock()
+
+		idx.currentMemoryBytes.Add(int64(entry.SizeBytes))
+		break
+	}
 }
 
-// evictOldestPartitions drops oldest time segments until memory drops below threshold.
+// evictOldestPartitions drops older time segments or sheds from the single partition.
+// Never evicts the newest partition wholesale.
 func (idx *StoreIndex) evictOldestPartitions() {
 	targetMem := int64(float64(idx.maxMemoryBytes) * 0.85)
 
@@ -139,31 +148,83 @@ func (idx *StoreIndex) evictOldestPartitions() {
 		}
 
 		var oldestBucket int64 = 1<<62 - 1
+		var newestBucket int64 = -1
 		for bID := range idx.partitions {
 			if bID < oldestBucket {
 				oldestBucket = bID
 			}
+			if bID > newestBucket {
+				newestBucket = bID
+			}
 		}
 
+		// Rule #2: Never evict the newest partition wholesale
+		if oldestBucket == newestBucket {
+			// Single partition exceeds budget: shed oldest entries from it (ring behavior)
+			p := idx.partitions[oldestBucket]
+			idx.partitionsMu.Unlock()
+
+			if p == nil {
+				return
+			}
+
+			p.mu.Lock()
+			if p.evicted || len(p.records) <= 1 {
+				p.mu.Unlock()
+				return
+			}
+
+			// Drop oldest entries from this single partition
+			dropCount := max(1, len(p.records)/4)
+			droppedIDs := p.skipList.EvictOldest(dropCount)
+			var droppedBytes int64
+
+			for _, id := range droppedIDs {
+				if r, ok := p.records[id]; ok {
+					droppedBytes += int64(r.SizeBytes)
+					delete(p.records, id)
+					if sMap, ok := p.serviceIndex[r.Service]; ok {
+						delete(sMap, id)
+					}
+					if lMap, ok := p.levelIndex[r.Level]; ok {
+						delete(lMap, id)
+					}
+				}
+			}
+			p.sizeBytes -= droppedBytes
+			p.mu.Unlock()
+
+			idx.currentMemoryBytes.Add(-droppedBytes)
+			idx.evictedCount.Add(uint64(len(droppedIDs)))
+			continue
+		}
+
+		// Multiple partitions exist: evict the oldest partition
 		oldest := idx.partitions[oldestBucket]
 		delete(idx.partitions, oldestBucket)
 		idx.partitionsMu.Unlock()
 
 		if oldest != nil {
-			oldest.mu.RLock()
+			oldest.mu.Lock()
+			oldest.evicted = true
 			freed := oldest.sizeBytes
-			oldest.mu.RUnlock()
+			count := len(oldest.records)
+			oldest.mu.Unlock()
 
 			idx.currentMemoryBytes.Add(-freed)
+			idx.evictedCount.Add(uint64(count))
 		}
 	}
 }
 
 // Query performs multi-field time-range and exact-match filtering.
-// Reads only relevant time partitions with independent reader locks to guarantee zero stalling.
-func (idx *StoreIndex) Query(start, end int64, level, service string, limit int) []parser.LogEntry {
+// order can be "asc" or "desc" (defaults to "asc").
+func (idx *StoreIndex) Query(start, end int64, level, service string, limit int, order string) []parser.LogEntry {
 	if limit <= 0 {
 		limit = 100
+	}
+	if limit > 10000 {
+		limit = 10000
 	}
 
 	startBucket := start / idx.bucketDuration
@@ -182,9 +243,15 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int)
 		return nil
 	}
 
-	sort.Slice(targetBuckets, func(i, j int) bool {
-		return targetBuckets[i] < targetBuckets[j]
-	})
+	if order == "desc" {
+		sort.Slice(targetBuckets, func(i, j int) bool {
+			return targetBuckets[i] > targetBuckets[j]
+		})
+	} else {
+		sort.Slice(targetBuckets, func(i, j int) bool {
+			return targetBuckets[i] < targetBuckets[j]
+		})
+	}
 
 	results := make([]parser.LogEntry, 0, limit)
 
@@ -197,6 +264,11 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int)
 		}
 
 		p.mu.RLock()
+		if p.evicted {
+			p.mu.RUnlock()
+			continue
+		}
+
 		var sSet, lSet map[uint64]struct{}
 		serviceFilter := service != ""
 		levelFilter := level != ""
@@ -217,20 +289,14 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int)
 			}
 		}
 
-		// Gemini Spec: "Inverted Indexing: Build a secondary inverted index for LogLevel
-		// and ServiceName to allow instant O(1) or O(log N) bucket lookups BEFORE executing a time-range filter."
+		// Inverted-index first filtering
 		if serviceFilter || levelFilter {
-			// Choose the smallest inverted index bucket to drive the lookup
-			var driverSet map[uint64]struct{}
-			var otherFilter map[uint64]struct{}
-
+			var driverSet, otherFilter map[uint64]struct{}
 			if serviceFilter && levelFilter {
 				if len(sSet) <= len(lSet) {
-					driverSet = sSet
-					otherFilter = lSet
+					driverSet, otherFilter = sSet, lSet
 				} else {
-					driverSet = lSet
-					otherFilter = sSet
+					driverSet, otherFilter = lSet, sSet
 				}
 			} else if serviceFilter {
 				driverSet = sSet
@@ -238,6 +304,8 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int)
 				driverSet = lSet
 			}
 
+			// Gather matched entries in this partition
+			var partitionMatches []parser.LogEntry
 			for id := range driverSet {
 				if otherFilter != nil {
 					if _, match := otherFilter[id]; !match {
@@ -246,39 +314,88 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int)
 				}
 				if entry, match := p.records[id]; match {
 					if entry.Timestamp >= start && entry.Timestamp <= end {
-						results = append(results, entry)
-						if len(results) >= limit {
-							break
-						}
+						partitionMatches = append(partitionMatches, entry)
 					}
 				}
 			}
+
+			// Sort partition matches to guarantee deterministic time ordering
+			if order == "desc" {
+				sort.Slice(partitionMatches, func(i, j int) bool {
+					if partitionMatches[i].Timestamp == partitionMatches[j].Timestamp {
+						return partitionMatches[i].ID > partitionMatches[j].ID
+					}
+					return partitionMatches[i].Timestamp > partitionMatches[j].Timestamp
+				})
+			} else {
+				sort.Slice(partitionMatches, func(i, j int) bool {
+					if partitionMatches[i].Timestamp == partitionMatches[j].Timestamp {
+						return partitionMatches[i].ID < partitionMatches[j].ID
+					}
+					return partitionMatches[i].Timestamp < partitionMatches[j].Timestamp
+				})
+			}
+
+			for _, entry := range partitionMatches {
+				results = append(results, entry)
+				if len(results) >= limit {
+					break
+				}
+			}
 		} else {
-			// Pure time-range query without field filters: scan the SkipList
+			// Scan SkipList
+			var partitionMatches []parser.LogEntry
 			p.skipList.ScanRange(start, end, func(id uint64) bool {
 				if entry, match := p.records[id]; match {
-					results = append(results, entry)
-					if len(results) >= limit {
-						return false // stop early
-					}
+					partitionMatches = append(partitionMatches, entry)
 				}
 				return true
 			})
-		}
 
+			if order == "desc" {
+				sort.Slice(partitionMatches, func(i, j int) bool {
+					if partitionMatches[i].Timestamp == partitionMatches[j].Timestamp {
+						return partitionMatches[i].ID > partitionMatches[j].ID
+					}
+					return partitionMatches[i].Timestamp > partitionMatches[j].Timestamp
+				})
+			} // asc is naturally sorted by SkipList scan
+
+			for _, entry := range partitionMatches {
+				results = append(results, entry)
+				if len(results) >= limit {
+					break
+				}
+			}
+		}
 		p.mu.RUnlock()
 
 		if len(results) >= limit {
 			break
 		}
 	}
-
 	return results
 }
 
-// CurrentMemoryUsage returns the currently tracked in-memory byte size.
+// CurrentMemoryUsage returns the tracked in-memory byte size.
 func (idx *StoreIndex) CurrentMemoryUsage() int64 {
 	return idx.currentMemoryBytes.Load()
+}
+
+// LivePartitionBytes calculates the exact sum of sizeBytes across all live partitions.
+func (idx *StoreIndex) LivePartitionBytes() int64 {
+	idx.partitionsMu.RLock()
+	defer idx.partitionsMu.RUnlock()
+
+	var total int64
+	for _, p := range idx.partitions {
+		p.mu.RLock()
+		if !p.evicted {
+			total += p.sizeBytes
+		}
+		p.mu.RUnlock()
+	}
+	return total
 }
 
 // TotalRecords returns the number of active records across all partitions.
@@ -289,8 +406,22 @@ func (idx *StoreIndex) TotalRecords() int {
 	total := 0
 	for _, p := range idx.partitions {
 		p.mu.RLock()
-		total += len(p.records)
+		if !p.evicted {
+			total += len(p.records)
+		}
 		p.mu.RUnlock()
 	}
 	return total
+}
+
+// PartitionCount returns the number of active partitions.
+func (idx *StoreIndex) PartitionCount() int {
+	idx.partitionsMu.RLock()
+	defer idx.partitionsMu.RUnlock()
+	return len(idx.partitions)
+}
+
+// EvictedCount returns total entries evicted.
+func (idx *StoreIndex) EvictedCount() uint64 {
+	return idx.evictedCount.Load()
 }

@@ -105,7 +105,7 @@
       "name": "internal/index",
       "version": "0.3.1",
       "scope": "required",
-      "description": "Time-partitioned concurrent store index with O(1) partition eviction",
+      "description": "Time-partitioned concurrent store index and doubly-linked SkipList with O(1) partition eviction",
       "licenses": [
         {
           "license": {
@@ -161,21 +161,6 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/skiplist@0.3.1",
-      "name": "internal/skiplist",
-      "version": "0.3.1",
-      "scope": "required",
-      "description": "Doubly-linked concurrent SkipList supporting O(log N + K) forward and backward range scans",
-      "licenses": [
-        {
-          "license": {
-            "id": "MIT"
-          }
-        }
-      ]
-    },
-    {
-      "type": "library",
       "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/storage@0.3.1",
       "name": "internal/storage",
       "version": "0.3.1",
@@ -216,7 +201,6 @@
         "pkg:golang/github.com/knowthankyew/genesis/internal/parser@0.3.1",
         "pkg:golang/github.com/knowthankyew/genesis/internal/redact@0.3.1",
         "pkg:golang/github.com/knowthankyew/genesis/internal/security@0.3.1",
-        "pkg:golang/github.com/knowthankyew/genesis/internal/skiplist@0.3.1",
         "pkg:golang/github.com/knowthankyew/genesis/internal/storage@0.3.1",
         "pkg:golang/github.com/knowthankyew/genesis/internal/ui@0.3.1"
       ]

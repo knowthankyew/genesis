@@ -35,11 +35,10 @@ def generate_sbom(output_path: str = "bom.json", arch: str | None = None, versio
         ("cli", "Unified CLI subcommands (server, run, pipe, query, tail, stats, burn)"),
         ("config", "JSON, environment variable (GENESIS_*), and CLI flag configuration loader"),
         ("engine", "Dual-channel QoS priority ingestion engine, SSE live tail broadcaster, and HTTP handlers"),
-        ("index", "Time-partitioned concurrent store index with O(1) partition eviction"),
+        ("index", "Time-partitioned concurrent store index and doubly-linked SkipList with O(1) partition eviction"),
         ("parser", "Zero-allocation pipe parser and multi-format auto-detector (Syslog RFC 5424/3164, JSON Lines, Plain Text)"),
         ("redact", "Ingest-time PII and credential redactor (Bearer, AWS keys, JWT, email, credit card, custom regex)"),
         ("security", "Constant-time Bearer token HTTP authentication middleware"),
-        ("skiplist", "Doubly-linked concurrent SkipList supporting O(log N + K) forward and backward range scans"),
         ("storage", "Optional crash-safe append-only CRC32 segment persistence with age and size pruning"),
         ("ui", "Embedded single-file zero-CDN Web UI served via Go embed.FS"),
     ]

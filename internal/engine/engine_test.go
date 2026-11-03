@@ -1,14 +1,17 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/knowthankyew/genesis/internal/config"
 	"github.com/knowthankyew/genesis/internal/storage"
 )
 
@@ -218,14 +221,14 @@ func TestEngine_MultiFormat_Ingest(t *testing.T) {
 	// 1. Syslog RFC 5424
 	_ = eng.Ingest([]byte("<165>1 2026-11-02T22:14:15Z host order-svc 1234 tr-sys - Order created\n"))
 	// 2. JSON Lines
-	_ = eng.Ingest([]byte(`{"service":"payment-svc","level":"error","msg":"Stripe error"}` + "\n"))
+	_ = eng.Ingest([]byte(`{"service":"payment-svc","level":"error","msg":"Upstream gateway timeout"}` + "\n"))
 	// 3. Plain text
 	_ = eng.Ingest([]byte("Fatal: Out of file descriptors\n"))
 
 	time.Sleep(50 * time.Millisecond)
 
 	// Check /query for each
-	req := httptest.NewRequest("GET", "/query?grep=Stripe", nil)
+	req := httptest.NewRequest("GET", "/query?grep=gateway", nil)
 	w := httptest.NewRecorder()
 	eng.HandleQuery(w, req)
 
@@ -239,7 +242,7 @@ func TestEngine_MultiFormat_Ingest(t *testing.T) {
 	}
 
 	if len(qResp.Logs) != 1 {
-		t.Fatalf("expected 1 log matching grep 'Stripe', got %d", len(qResp.Logs))
+		t.Fatalf("expected 1 log matching grep 'gateway', got %d", len(qResp.Logs))
 	}
 	if qResp.Logs[0].Service != "payment-svc" {
 		t.Errorf("expected service 'payment-svc', got %q", qResp.Logs[0].Service)
@@ -315,5 +318,72 @@ func TestEngine_PersistenceReplay_NoDeadlockOrDuplication(t *testing.T) {
 	})
 	if count != 10 {
 		t.Fatalf("expected exactly 10 entries on disk after restart replay, got %d (duplication bug!)", count)
+	}
+}
+
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	writeDeadlineSet bool
+	writeDeadlineVal time.Time
+}
+
+func (d *deadlineRecorder) SetWriteDeadline(t time.Time) error {
+	d.writeDeadlineSet = true
+	d.writeDeadlineVal = t
+	return nil
+}
+
+func TestSecurityInvariants_LoopbackAndBurnAndCORS(t *testing.T) {
+	cfg := config.DefaultConfig()
+	for name, addr := range map[string]string{
+		"TCPAddr":    cfg.TCPAddr,
+		"UDPAddr":    cfg.UDPAddr,
+		"SyslogAddr": cfg.SyslogAddr,
+		"HTTPAddr":   cfg.HTTPAddr,
+	} {
+		if !strings.HasPrefix(addr, "127.0.0.1:") {
+			t.Fatalf("security invariant violated: default %s=%q does not bind to 127.0.0.1", name, addr)
+		}
+	}
+
+	eng := NewEngine(EngineConfig{})
+	defer eng.Close()
+
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut} {
+		req := httptest.NewRequest(method, "/logs", nil)
+		w := httptest.NewRecorder()
+		eng.HandleBurn(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected 405 for %s /logs, got %d", method, w.Code)
+		}
+	}
+
+	reqDel := httptest.NewRequest(http.MethodDelete, "/logs", nil)
+	wDel := httptest.NewRecorder()
+	eng.HandleBurn(wDel, reqDel)
+	if wDel.Code != http.StatusOK {
+		t.Fatalf("expected 200 for DELETE /logs, got %d", wDel.Code)
+	}
+
+	reqQuery := httptest.NewRequest(http.MethodGet, "/query", nil)
+	wQuery := httptest.NewRecorder()
+	eng.HandleQuery(wQuery, reqQuery)
+	if cors := wQuery.Header().Get("Access-Control-Allow-Origin"); cors != "" {
+		t.Fatalf("unexpected CORS header on /query: %q", cors)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reqTail := httptest.NewRequest(http.MethodGet, "/tail", nil).WithContext(ctx)
+	wTail := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	eng.HandleTail(wTail, reqTail)
+	if !wTail.writeDeadlineSet || !wTail.writeDeadlineVal.IsZero() {
+		t.Fatalf("expected SSE HandleTail to clear write deadline to zero time, got set=%v val=%v", wTail.writeDeadlineSet, wTail.writeDeadlineVal)
+	}
+	if ct := wTail.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("expected text/event-stream Content-Type on /tail, got %q", ct)
+	}
+	if cors := wTail.Header().Get("Access-Control-Allow-Origin"); cors != "" {
+		t.Fatalf("unexpected CORS header on /tail: %q", cors)
 	}
 }

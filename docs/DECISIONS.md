@@ -20,7 +20,7 @@ This document records the foundational architectural decisions and trade-offs ma
 * **Context:** Genesis is an in-memory-first telemetry inbox. However, users occasionally need short-term crash resilience across restarts.
 * **Decision:** Disk persistence is strictly **opt-in** via `--data-dir` (default: disabled / empty). When enabled:
   - Writes length-prefixed binary frames: `[4-byte payload length][4-byte IEEE CRC32][payload bytes]`.
-  - Rotates append-only segment files (`.seg`) at 64 MB boundaries.
+  - Rotates append-only segment files (`.seg`) at <!-- claim:max_segment_mb -->16 MB<!-- /claim --> boundaries.
   - On restart, replays newest valid segments into memory, cleanly discarding any incomplete/torn writes at the end of a crashed segment.
   - On `genesis burn` (or `DELETE /logs`), all `.seg` files are unlinked and wiped immediately, maintaining the Amnesiac Purge invariant.
 * **Consequences:** Simple, robust crash recovery with no heavy database engine (SQLite, BoltDB, or RocksDB).

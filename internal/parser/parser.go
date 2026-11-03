@@ -9,7 +9,9 @@ import (
 )
 
 const (
-	DefaultMaxLineLength = 65536 // 64 KB
+	DefaultMaxLineLength   = 65536 // 64 KB
+	MaxServicePoolSize     = 1024
+	EntryBaseOverheadBytes = 360
 )
 
 var (
@@ -35,12 +37,18 @@ func TruncatedLinesCount() uint64 {
 	return truncatedLines.Load()
 }
 
+// RecordTruncatedLine increments the truncated line counter when an upstream reader
+// (such as a bounded TCP ReadSlice buffer) truncates an oversized incoming line.
+func RecordTruncatedLine() {
+	truncatedLines.Add(1)
+}
+
 func internService(b []byte) string {
 	if s, ok := servicePool.Load(string(b)); ok {
 		return s.(string)
 	}
 	s := string(b)
-	if servicePoolSize.Load() < 1024 {
+	if servicePoolSize.Load() < MaxServicePoolSize {
 		if _, loaded := servicePool.LoadOrStore(s, s); !loaded {
 			servicePoolSize.Add(1)
 		}
@@ -219,7 +227,7 @@ func ParseLogLine(id uint64, raw []byte, maxLineLen int) (LogEntry, error) {
 	// - Inverted indices map nodes: ~64 bytes
 	// - String contents & headers: len(traceID) + len(message) + ~32 bytes
 	// Calibrated overhead: ~360 bytes + string lengths
-	sizeBytes := 360 + len(traceID) + len(message)
+	sizeBytes := EntryBaseOverheadBytes + len(traceID) + len(message)
 
 	return LogEntry{
 		ID:        id,

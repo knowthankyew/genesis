@@ -67,7 +67,7 @@ func TestStoreIndex_EvictionInsertRace_AccountingDrift(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < insertsPerWriter; i++ {
 				// Timestamps span multiple partitions to force evictions
-				ts := baseTime + int64((i % 40) * 2)
+				ts := baseTime + int64((i%40)*2)
 				id := uint64(workerID*10000 + i + 1)
 				idx.Insert(parser.LogEntry{
 					ID:        id,

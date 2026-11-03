@@ -16,22 +16,24 @@ Genesis originated from an unprompted, highly detailed systems design challenge 
 
 ---
 
-## Verified Benchmarks
+## <!-- claim_term:verified -->Verified<!-- /claim_term --> Benchmarks
 
-The figures below were produced by the standalone load generator `cmd/genesis-bench` driving a live server process over network sockets (50 concurrent TCP clients streaming logs for 60 seconds with concurrent HTTP analytical queries). Full hardware environment and telemetry details are committed in [`docs/benchmarks/2026-11-02-e0c20fa.md`](docs/benchmarks/2026-11-02-e0c20fa.md).
+The figures below were produced by the standalone load generator `cmd/genesis-bench` driving a live server process over network sockets (<!-- claim:bench_concurrent_clients -->50<!-- /claim --> concurrent TCP clients streaming logs for <!-- claim:bench_duration_target_sec -->60s<!-- /claim --> with concurrent HTTP analytical queries). Full hardware environment and telemetry details are committed in [`docs/benchmarks/2026-11-02-e0c20fa.md`](docs/benchmarks/2026-11-02-e0c20fa.md) and [`docs/benchmarks/empirical_benchmarks.json`](docs/benchmarks/empirical_benchmarks.json).
 
+<!-- BEGIN_EMPIRICAL -->
 | Metric | Target | Measured Result | Status |
 | :--- | :--- | :--- | :--- |
-| **Ingestion Throughput** | $\ge \text{50,000 lines/sec}$ over 60s | **277,192.64 lines/sec** indexed | ✅ **PASSED** |
-| **Read Query Latency (P50)** | — | **373.33 µs** | **SUB-MILLISECOND** |
-| **Read Query Latency (P90)** | — | **17.04 ms** | **SUB-20MS** |
-| **Read Query Latency (P99)** | $< \text{5.0 ms}$ | **55.35 ms** | ❌ **MISSED TARGET** |
-| **Memory Ceiling** | Plateau $\le \text{512 MB}$ | **293.70 MB** (Peak: 426.01 MB) | ✅ **PASSED** |
-| **Idle TCP Connections** | 10,000 connections | **10,000 held simultaneously** | ✅ **PASSED** |
-| **Data Race Safety** | 0 races under `-race` | **0 data races detected** | ✅ **PASSED** |
-| **Query Correctness (Oracle)**| 1,000 random queries | **100% exact match** vs brute-force | ✅ **PASSED** |
+| **Ingestion Throughput** | $\ge$ <!-- claim:bench_throughput_target -->50,000<!-- /claim --> lines/sec over <!-- claim:bench_duration_target_sec -->60s<!-- /claim --> | **<!-- claim:bench_throughput_lps -->277,192.64 lines/sec<!-- /claim -->** indexed | ✅ **<!-- claim:bench_throughput_status -->PASSED<!-- /claim -->** |
+| **Read Query Latency (P50)** | — | **<!-- claim:bench_p50_us -->373.33 µs<!-- /claim -->** | **<!-- claim:bench_p50_status -->SUB-MILLISECOND<!-- /claim -->** |
+| **Read Query Latency (P90)** | — | **<!-- claim:bench_p90_ms -->17.04 ms<!-- /claim -->** | **<!-- claim:bench_p90_status -->SUB-TWENTY-MS<!-- /claim -->** |
+| **Read Query Latency (P99)** | $<$ <!-- claim:bench_p99_target_ms -->5.0 ms<!-- /claim --> | **<!-- claim:bench_p99_ms -->55.35 ms<!-- /claim -->** | ❌ **<!-- claim:bench_p99_status -->MISSED TARGET<!-- /claim -->** |
+| **Heap Memory Ceiling (`HeapAlloc`)** | Plateau $\le$ <!-- claim:bench_memory_ceiling_mb -->512 MB<!-- /claim --> | **<!-- claim:bench_heap_plateau_mb -->293.70 MB<!-- /claim -->** (Peak: <!-- claim:bench_heap_peak_mb -->426.01 MB<!-- /claim -->) | ✅ **<!-- claim:bench_memory_status -->PASSED<!-- /claim -->** |
+| **Idle TCP Connections** | <!-- claim:bench_idle_conns_target -->10,000<!-- /claim --> connections | **<!-- claim:bench_idle_conns_held -->10,000 held simultaneously<!-- /claim -->** (<!-- claim:bench_rss_10k_kb -->573,500 KB<!-- /claim --> process RSS) | ✅ **<!-- claim:bench_conns_status -->PASSED<!-- /claim -->** |
+| **Data Race Safety** | <!-- claim:bench_race_errors_target -->0<!-- /claim --> races under `-race` | **<!-- claim:bench_race_errors_measured -->0<!-- /claim --> data races detected** | ✅ **<!-- claim:bench_race_status -->PASSED<!-- /claim -->** |
+| **Query Correctness (Oracle)**| <!-- claim:bench_oracle_queries_target -->1,000<!-- /claim --> random queries | **<!-- claim:bench_oracle_match_pct -->100% exact match<!-- /claim -->** across <!-- claim:bench_oracle_queries_measured -->1,000<!-- /claim --> queries | ✅ **<!-- claim:bench_oracle_status -->PASSED<!-- /claim -->** |
+<!-- END_EMPIRICAL -->
 
-> **Diagnosis on P99 Latency:** While P50 (373 µs) is well within the sub-millisecond target, the 99th percentile reaches 55.35 ms under heavy saturation. Under 277,000 writes/second across 50 clients, 99th-percentile queries contend for read-locks while Go runtime garbage collection sweeps evicted time partitions.
+> **Diagnosis on Saturation & Backpressure:** During the <!-- claim:bench_duration_target_sec -->60s<!-- /claim --> unthrottled flood across <!-- claim:bench_concurrent_clients -->50<!-- /claim --> concurrent TCP streams (<!-- claim:bench_lines_sent -->66,959,207<!-- /claim --> lines sent over TCP), the server indexed <!-- claim:bench_lines_indexed -->16,687,085<!-- /claim --> lines (**<!-- claim:bench_throughput_lps -->277,192.64 lines/sec<!-- /claim -->**) and shed <!-- claim:bench_lines_dropped -->49,976,055<!-- /claim --> normal-lane lines (`queue_full` backpressure) once the bounded <!-- claim:server_normal_queue_cap -->250,000-slot<!-- /claim --> normal channel filled. While P50 query latency (<!-- claim:bench_p50_us -->373.33 µs<!-- /claim -->) remained sub-millisecond, P99 reached <!-- claim:bench_p99_ms -->55.35 ms<!-- /claim -->, which we hypothesize reflects partition read-lock contention and runtime GC pauses during concurrent partition eviction.
 
 ---
 

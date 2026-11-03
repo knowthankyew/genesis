@@ -43,16 +43,16 @@ type DroppedStats struct {
 }
 
 type Stats struct {
-	ReceivedCount  uint64         `json:"received"`
-	IndexedCount   uint64         `json:"indexed"`
-	PriorityCount  uint64         `json:"priority"`
+	ReceivedCount  uint64            `json:"received"`
+	IndexedCount   uint64            `json:"indexed"`
+	PriorityCount  uint64            `json:"priority"`
 	Dropped        map[string]uint64 `json:"dropped"`
-	Evicted        uint64         `json:"evicted"`
-	Partitions     int            `json:"partitions"`
-	AccountedBytes int64          `json:"accounted_bytes"`
-	HeapBytes      uint64         `json:"heap_bytes"`
-	QueueDepths    map[string]int `json:"queue_depths"`
-	UptimeSeconds  int64          `json:"uptime_seconds"`
+	Evicted        uint64            `json:"evicted"`
+	Partitions     int               `json:"partitions"`
+	AccountedBytes int64             `json:"accounted_bytes"`
+	HeapBytes      uint64            `json:"heap_bytes"`
+	QueueDepths    map[string]int    `json:"queue_depths"`
+	UptimeSeconds  int64             `json:"uptime_seconds"`
 }
 
 type tailSubscriber struct {
@@ -337,11 +337,6 @@ func (e *Engine) Ingest(raw []byte) error {
 		raw = e.redactor.Redact(raw)
 	}
 
-	// Disk persistence if enabled
-	if e.store != nil {
-		_ = e.store.Append(raw)
-	}
-
 	payload := make([]byte, len(raw))
 	copy(payload, raw)
 
@@ -353,16 +348,31 @@ func (e *Engine) Ingest(raw []byte) error {
 		select {
 		case e.priorityCh <- payload:
 			e.priorityCount.Add(1)
+			if e.store != nil {
+				_ = e.store.Append(payload)
+			}
 			return nil
-		case <-e.ctx.Done():
-			e.dropped.Stopped.Add(1)
-			return ErrStopped
+		default:
+			// Priority queue full: fall back non-blockingly to normalCh so single-reader UDP loops never stall
+			select {
+			case e.normalCh <- payload:
+				if e.store != nil {
+					_ = e.store.Append(payload)
+				}
+				return nil
+			default:
+				e.dropped.QueueFull.Add(1)
+				return ErrBackpressure
+			}
 		}
 	}
 
 	// Normal lane
 	select {
 	case e.normalCh <- payload:
+		if e.store != nil {
+			_ = e.store.Append(payload)
+		}
 		return nil
 	default:
 		e.dropped.QueueFull.Add(1)
@@ -458,9 +468,9 @@ func (e *Engine) HandleStats(w http.ResponseWriter, r *http.Request) {
 	runtime.ReadMemStats(&m)
 
 	stats := Stats{
-		ReceivedCount:  e.receivedCount.Load(),
-		IndexedCount:   e.indexedCount.Load(),
-		PriorityCount:  e.priorityCount.Load(),
+		ReceivedCount: e.receivedCount.Load(),
+		IndexedCount:  e.indexedCount.Load(),
+		PriorityCount: e.priorityCount.Load(),
 		Dropped: map[string]uint64{
 			"queue_full": e.dropped.QueueFull.Load(),
 			"malformed":  e.dropped.Malformed.Load(),
@@ -474,7 +484,7 @@ func (e *Engine) HandleStats(w http.ResponseWriter, r *http.Request) {
 			"normal":   len(e.normalCh),
 			"priority": len(e.priorityCh),
 		},
-		UptimeSeconds:  int64(time.Since(e.startTime).Seconds()),
+		UptimeSeconds: int64(time.Since(e.startTime).Seconds()),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

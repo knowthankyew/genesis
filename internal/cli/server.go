@@ -3,9 +3,9 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -20,10 +20,18 @@ import (
 
 	"github.com/knowthankyew/genesis/internal/config"
 	"github.com/knowthankyew/genesis/internal/engine"
+	"github.com/knowthankyew/genesis/internal/parser"
 	"github.com/knowthankyew/genesis/internal/redact"
 	"github.com/knowthankyew/genesis/internal/security"
 	"github.com/knowthankyew/genesis/internal/storage"
 	"github.com/knowthankyew/genesis/internal/ui"
+)
+
+const (
+	GoRuntimeMemoryLimitMB    = 480
+	ServerNormalQueueCapacity = 250000
+	ServerPriorityQueueCap    = 50000
+	ServerBucketDurationSec   = 5
 )
 
 var (
@@ -87,7 +95,7 @@ func RunServer(args []string) error {
 	cfg.TLSKeyFile = *tlsKey
 
 	// Enforce 480MB memory ceiling on Go runtime GC so total heap never breaches 512MB
-	debug.SetMemoryLimit(480 * 1024 * 1024)
+	debug.SetMemoryLimit(GoRuntimeMemoryLimitMB * 1024 * 1024)
 
 	log.Println("==========================================================")
 	log.Println("  GENESIS: High-Performance In-Memory Log Engine")
@@ -131,10 +139,10 @@ func RunServer(args []string) error {
 
 	eng := engine.NewEngine(engine.EngineConfig{
 		MaxMemoryBytes:   cfg.MaxMemMB * 1024 * 1024,
-		QueueCapacity:    250000,
-		PriorityQueueCap: 50000,
+		QueueCapacity:    ServerNormalQueueCapacity,
+		PriorityQueueCap: ServerPriorityQueueCap,
 		MaxLineLength:    cfg.MaxLineLen,
-		BucketDuration:   5, // 5-second time partitions
+		BucketDuration:   ServerBucketDurationSec, // 5-second time partitions
 		Redactor:         redactor,
 		Store:            diskStore,
 	})
@@ -211,7 +219,7 @@ func RunServer(args []string) error {
 	}()
 
 	// 4. Start TCP Ingestion Listener
-	go startTCPServer(ctx, cfg.TCPAddr, eng, cfg.MaxConns)
+	go startTCPServer(ctx, cfg.TCPAddr, eng, cfg.MaxConns, cfg.MaxLineLen)
 
 	// 5. Start UDP Ingestion Listener
 	go startUDPServer(ctx, cfg.UDPAddr, eng, "[UDP]")
@@ -238,7 +246,7 @@ func IsBindingAllInterfaces(addr string) bool {
 	return strings.HasPrefix(addr, ":") || strings.HasPrefix(addr, "0.0.0.0:") || addr == "0.0.0.0"
 }
 
-func startTCPServer(ctx context.Context, addr string, eng *engine.Engine, maxConnections int64) {
+func startTCPServer(ctx context.Context, addr string, eng *engine.Engine, maxConnections int64, maxLineLen int) {
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Fatalf("[TCP] Listen error: %v", err)
@@ -259,6 +267,10 @@ func startTCPServer(ctx context.Context, addr string, eng *engine.Engine, maxCon
 			case <-ctx.Done():
 				return
 			default:
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 		}
@@ -274,22 +286,55 @@ func startTCPServer(ctx context.Context, addr string, eng *engine.Engine, maxCon
 				_ = c.Close()
 				activeTCPConnections.Add(-1)
 			}()
-			handleTCPConnection(c, eng)
+			handleTCPConnection(c, eng, maxLineLen)
 		}(conn)
 	}
 }
 
-func handleTCPConnection(conn net.Conn, eng *engine.Engine) {
+func handleTCPConnection(conn net.Conn, eng *engine.Engine, maxLineLen int) {
+	if maxLineLen <= 0 {
+		maxLineLen = parser.DefaultMaxLineLength
+	}
 	reader := bufio.NewReaderSize(conn, 4096)
+	var acc []byte
+	truncated := false
 	for {
-		line, err := reader.ReadBytes('\n')
-		if len(line) > 0 {
-			_ = eng.Ingest(line)
-		}
-		if err != nil {
-			if err != io.EOF {
-				// connection closed
+		chunk, err := reader.ReadSlice('\n')
+		if len(acc) == 0 && !errors.Is(err, bufio.ErrBufferFull) {
+			if len(chunk) > maxLineLen {
+				chunk = chunk[:maxLineLen]
+				parser.RecordTruncatedLine()
 			}
+			if len(chunk) > 0 {
+				_ = eng.Ingest(chunk)
+			}
+			if err != nil {
+				break
+			}
+			continue
+		}
+
+		if room := maxLineLen - len(acc); room > 0 {
+			if len(chunk) > room {
+				chunk = chunk[:room]
+				truncated = true
+			}
+			acc = append(acc, chunk...)
+		} else if len(chunk) > 0 {
+			truncated = true
+		}
+
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if truncated {
+			parser.RecordTruncatedLine()
+		}
+		if len(acc) > 0 {
+			_ = eng.Ingest(acc)
+		}
+		acc, truncated = nil, false
+		if err != nil {
 			break
 		}
 	}
@@ -325,6 +370,10 @@ func startUDPServer(ctx context.Context, addr string, eng *engine.Engine, tag st
 			case <-ctx.Done():
 				return
 			default:
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
 				continue
 			}
 		}

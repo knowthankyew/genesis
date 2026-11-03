@@ -1,5 +1,5 @@
-# CodeRabbit Configuration for genesis
-# Targeted Scope: High-Performance In-Memory Go Log Engine, SkipList Index, Empirical Benchmarks & Privacy Invariants
+# CodeRabbit Configuration for Genesis (knowthankyew/genesis)
+# Targeted Scope: Full Repository Deep Audit (Go Stdlib Engine, SkipList Index, Empirical Claims Registry & Zero-Egress Invariants)
 
 language: "en-US"
 
@@ -11,28 +11,34 @@ reviews:
   sequence_diagrams: true
   auto_review:
     enabled: true
-    drafts: false
+    drafts: true
 
+  # Filter out binary assets, demo media, and immutable historical origin snapshots.
+  # Structured empirical JSON artifacts (docs/benchmarks/empirical_benchmarks.json, docs/claims_registry.json, bom.json)
+  # are intentionally included so CodeRabbit can audit claim correctness and data consistency.
   path_filters:
-    - "!bom.json"
-    - "!docs/origin/**"
     - "!**/*.gif"
+    - "!**/*.mp4"
     - "!**/*.png"
+    - "!**/*.zip"
+    - "!**/*.seg"
+    - "!bin/**"
+    - "!docs/origin/**"
 
   path_instructions:
     - path: "**/*"
       instructions: |
-        You are performing a systems engineering, concurrency safety, security, and claims parity audit for "genesis" (knowthankyew/genesis), a high-performance in-memory log and telemetry engine written in pure Go standard library.
+        You are performing an exhaustive systems engineering, concurrency safety, security, and empirical claims parity audit for "genesis" (knowthankyew/genesis), a high-performance in-memory log and telemetry engine written in pure Go standard library.
 
-        Evaluate all code and documentation against these non-negotiable invariants:
+        Evaluate all code, JSON artifacts, and documentation against these non-negotiable invariants:
         1. CLAIMS ARE MEASURED, NOT ASSERTED:
-           - Every throughput, latency, or memory number in `README.md` or `docs/` must trace back to a committed benchmark report in `docs/benchmarks/` produced by `cmd/genesis-bench`.
+           - Every quantitative throughput, latency, memory, or constant claim in `README.md`, `SECURITY.md`, `docs/ARCHITECTURE.md`, and `docs/DECISIONS.md` must be governed by `<!-- claim:<id> -->...<!-- /claim -->` markers registered in `docs/claims_registry.json` and backed by `docs/benchmarks/empirical_benchmarks.json` or Go source constants.
            - Prohibit unverified marketing superlatives ('bulletproof', 'rock solid', 'conclusive', 'definitive', 'infinitely scalable').
         2. ZERO EXTERNAL DEPENDENCIES:
            - `go.mod` must remain 100% Go standard library (zero `require` directives).
         3. CONCURRENCY & MEMORY SAFETY:
-           - Verify lock ordering and race freedom across `internal/index/`, `internal/skiplist/`, `internal/engine/`, and `internal/storage/`.
-           - Ensure memory accounting never drifts under concurrent partition eviction and insertion.
+           - Verify lock ordering and race freedom across `internal/index/`, `internal/engine/`, `internal/storage/`, and `internal/cli/`.
+           - Ensure memory accounting (`currentMemoryBytes` vs partition `sizeBytes`) never drifts under concurrent insertion, partition eviction, and `Burn()`.
         4. SECURITY & ZERO WEB UI EGRESS:
            - Default listeners must bind to `127.0.0.1` unless `--allow-all-interfaces` is passed.
            - `internal/ui/assets/index.html` must make zero external network requests (no CDN scripts, fonts, or `http://`/`https://` URLs).
@@ -42,5 +48,7 @@ knowledge_base:
   learnings:
     scope: "auto"
   linked_repositories:
+    - repository: "knowthankyew/privacy-telemetry"
+      instructions: "Contains canonical zero-egress invariants, volatile memory defaults, and privacy schemas for the KnowThankYew suite."
     - repository: "knowthankyew/portfolio-admin"
       instructions: "Contains canonical portfolio integration standards and Master Brief assertions (KNOWTHANKYEW_PORTFOLIO_MASTER_BRIEF.md)."

@@ -38,6 +38,7 @@ This document outlines the threat model, trust boundaries, network listeners, an
 * **Local Ingestion Interfaces:** By default, Genesis binds listeners strictly to `127.0.0.1` (`:9000` TCP, `:9001` UDP, `:5514` Syslog). Any process with access to loopback networking on the host machine can emit logs into Genesis.
 * **Remote Ingestion (Homelab / LAN):** When explicitly configured to bind on non-loopback interfaces (using `-allow-all-interfaces` or `-syslog 0.0.0.0:5514`), devices within the local network (routers, hypervisors, NAS boxes) can stream unauthenticated UDP/TCP logs.
 * **Threat Mitigation:** Never expose raw ingestion ports directly to the public internet. Use firewall rules, private subnets, or VPN tunnels (WireGuard / Tailscale) to restrict network access to trusted devices.
+* **Bounded Ingestion & Resource Guardrails:** Incoming TCP/UDP lines default to a <!-- claim:default_max_line_kb -->64 KB<!-- /claim --> cap before truncation (`DefaultMaxLineLength`, configurable via `--max-line-len`), and the parser's string interning pool (`internService`) is capped at <!-- claim:max_service_pool_size -->1,024<!-- /claim --> cached service strings (`MaxServicePoolSize`).
 
 ### Who Can Read Logs?
 * **Web UI & REST Query API:** Available over HTTP on `127.0.0.1:8080`.

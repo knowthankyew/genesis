@@ -9,6 +9,13 @@ import (
 	"github.com/knowthankyew/genesis/internal/parser"
 )
 
+const (
+	DefaultMaxMemoryBytes = 512 * 1024 * 1024
+	DefaultQueryLimit     = 100
+	MaxQueryLimit         = 10000
+	EvictionTargetRatio   = 0.85
+)
+
 // IndexConfig defines capacity and memory ceiling parameters.
 type IndexConfig struct {
 	MaxMemoryBytes    int64
@@ -58,7 +65,7 @@ type StoreIndex struct {
 func NewStoreIndex(cfg IndexConfig) *StoreIndex {
 	maxMem := cfg.MaxMemoryBytes
 	if maxMem <= 0 {
-		maxMem = 512 * 1024 * 1024
+		maxMem = DefaultMaxMemoryBytes
 	}
 	bucketSec := cfg.BucketDurationSec
 	if bucketSec <= 0 {
@@ -111,6 +118,7 @@ func (idx *StoreIndex) Insert(entry parser.LogEntry) {
 
 		p.records[entry.ID] = entry
 		p.sizeBytes += int64(entry.SizeBytes)
+		idx.currentMemoryBytes.Add(int64(entry.SizeBytes))
 		p.skipList.Insert(entry.Timestamp, entry.ID)
 
 		if entry.Service != "" {
@@ -131,8 +139,6 @@ func (idx *StoreIndex) Insert(entry parser.LogEntry) {
 			lMap[entry.ID] = struct{}{}
 		}
 		p.mu.Unlock()
-
-		idx.currentMemoryBytes.Add(int64(entry.SizeBytes))
 		break
 	}
 }
@@ -145,7 +151,7 @@ func (idx *StoreIndex) evictOldestPartitions() {
 	}
 	defer idx.evicting.Store(false)
 
-	targetMem := int64(float64(idx.maxMemoryBytes) * 0.85)
+	targetMem := int64(float64(idx.maxMemoryBytes) * EvictionTargetRatio)
 
 	for idx.currentMemoryBytes.Load() > targetMem {
 		idx.partitionsMu.Lock()
@@ -197,10 +203,9 @@ func (idx *StoreIndex) evictOldestPartitions() {
 				}
 			}
 			p.sizeBytes -= droppedBytes
-			p.mu.Unlock()
-
 			idx.currentMemoryBytes.Add(-droppedBytes)
 			idx.evictedCount.Add(uint64(len(droppedIDs)))
+			p.mu.Unlock()
 			continue
 		}
 
@@ -211,13 +216,15 @@ func (idx *StoreIndex) evictOldestPartitions() {
 
 		if oldest != nil {
 			oldest.mu.Lock()
-			oldest.evicted = true
-			freed := oldest.sizeBytes
-			count := len(oldest.records)
+			if !oldest.evicted {
+				oldest.evicted = true
+				freed := oldest.sizeBytes
+				count := len(oldest.records)
+				oldest.sizeBytes = 0
+				idx.currentMemoryBytes.Add(-freed)
+				idx.evictedCount.Add(uint64(count))
+			}
 			oldest.mu.Unlock()
-
-			idx.currentMemoryBytes.Add(-freed)
-			idx.evictedCount.Add(uint64(count))
 		}
 	}
 }
@@ -231,10 +238,10 @@ func (idx *StoreIndex) Query(start, end int64, level, service, grep string, limi
 // QueryWithTrace performs multi-field time-range, exact-match (level, service, trace), and substring grep filtering.
 func (idx *StoreIndex) QueryWithTrace(start, end int64, level, service, trace, grep string, limit int, order string) []parser.LogEntry {
 	if limit <= 0 {
-		limit = 100
+		limit = DefaultQueryLimit
 	}
-	if limit > 10000 {
-		limit = 10000
+	if limit > MaxQueryLimit {
+		limit = MaxQueryLimit
 	}
 
 	startBucket := start / idx.bucketDuration
@@ -352,19 +359,24 @@ func (idx *StoreIndex) Burn() int {
 	defer idx.partitionsMu.Unlock()
 
 	purged := 0
+	var totalFreed int64
 	for _, p := range idx.partitions {
 		p.mu.Lock()
-		p.evicted = true
-		purged += len(p.records)
-		p.records = nil
-		p.serviceIndex = nil
-		p.levelIndex = nil
-		p.skipList = nil
+		if !p.evicted {
+			p.evicted = true
+			purged += len(p.records)
+			totalFreed += p.sizeBytes
+			p.sizeBytes = 0
+			p.records = nil
+			p.serviceIndex = nil
+			p.levelIndex = nil
+			p.skipList = nil
+		}
 		p.mu.Unlock()
 	}
 
 	idx.partitions = make(map[int64]*Partition)
-	idx.currentMemoryBytes.Store(0)
+	idx.currentMemoryBytes.Add(-totalFreed)
 	idx.evictedCount.Store(0)
 	return purged
 }

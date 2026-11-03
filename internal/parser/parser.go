@@ -88,13 +88,14 @@ func ExtractLevel(raw []byte) string {
 
 // LogEntry represents a parsed, structured log object.
 type LogEntry struct {
-	ID        uint64 `json:"id"`
-	Timestamp int64  `json:"timestamp"`
-	Service   string `json:"service"`
-	Level     string `json:"level"`
-	TraceID   string `json:"trace_id"`
-	Message   string `json:"message"`
-	SizeBytes int    `json:"size_bytes"`
+	ID         uint64            `json:"id"`
+	Timestamp  int64             `json:"timestamp"`
+	Service    string            `json:"service"`
+	Level      string            `json:"level"`
+	TraceID    string            `json:"trace_id"`
+	Message    string            `json:"message"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+	SizeBytes  int               `json:"size_bytes"`
 }
 
 // FastParseTimestamp parses unix timestamp from ASCII bytes without allocations.

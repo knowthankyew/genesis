@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  genesis:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8080:8080" # Web UI and REST API
+      - "127.0.0.1:9000:9000" # TCP ingestion
+      - "127.0.0.1:5514:5514/udp" # Syslog ingestion
+    environment:
+      - GENESIS_MAX_MEM_MB=350
+      - GENESIS_ALLOW_ALL_INTERFACES=true # Bind within container
+    restart: unless-stopped
+
+  api-service:
+    image: alpine:latest
+    command: >
+      sh -c "while true; do
+        echo \"[INFO] Healthcheck ok response_time=12ms\";
+        sleep 2;
+        echo \"[ERROR] Database pool connection retry attempt=1\" >&2;
+        sleep 5;
+      done"
+    logging:
+      driver: "syslog"
+      options:
+        syslog-address: "udp://127.0.0.1:5514"
+        tag: "api-service"
+    depends_on:
+      - genesis

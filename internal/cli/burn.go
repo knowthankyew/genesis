@@ -16,7 +16,13 @@ func RunBurn(args []string) error {
 	httpURL := fs.String("http", "http://127.0.0.1:8080", "Genesis HTTP address")
 	force := fs.Bool("y", false, "Confirm burn without interactive prompt")
 	fs.BoolVar(force, "force", false, "Confirm burn without interactive prompt")
+	token := fs.String("token", "", "Bearer auth token (or GENESIS_AUTH_TOKEN)")
 	_ = fs.Parse(args)
+
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("GENESIS_AUTH_TOKEN")
+	}
 
 	if !*force {
 		fmt.Print("WARNING: This will purge all in-memory telemetry logs with zero disk trace.\nAre you sure you want to proceed? [y/N]: ")
@@ -36,6 +42,9 @@ func RunBurn(args []string) error {
 	req, err := http.NewRequest(http.MethodDelete, baseURL+"/logs", nil)
 	if err != nil {
 		return fmt.Errorf("failed to create delete request: %w", err)
+	}
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
 	}
 
 	resp, err := http.DefaultClient.Do(req)

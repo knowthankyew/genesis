@@ -16,6 +16,8 @@ import (
 
 	"github.com/knowthankyew/genesis/internal/index"
 	"github.com/knowthankyew/genesis/internal/parser"
+	"github.com/knowthankyew/genesis/internal/redact"
+	"github.com/knowthankyew/genesis/internal/storage"
 )
 
 var (
@@ -30,6 +32,8 @@ type EngineConfig struct {
 	NumWorkers       int
 	MaxLineLength    int
 	BucketDuration   int64
+	Redactor         *redact.Redactor
+	Store            *storage.DiskStore
 }
 
 type DroppedStats struct {
@@ -68,6 +72,9 @@ type Engine struct {
 	idCounter     atomic.Uint64
 	startTime     time.Time
 	closing       atomic.Bool
+
+	redactor *redact.Redactor
+	store    *storage.DiskStore
 
 	// Metrics
 	receivedCount atomic.Uint64
@@ -121,6 +128,8 @@ func NewEngine(cfg EngineConfig) *Engine {
 		ctx:           ctx,
 		cancel:        cancel,
 		tailSubs:      make(map[uint64]*tailSubscriber),
+		redactor:      cfg.Redactor,
+		store:         cfg.Store,
 	}
 
 	e.startWorkers()
@@ -268,6 +277,9 @@ func (e *Engine) HandleTail(w http.ResponseWriter, r *http.Request) {
 func (e *Engine) Burn() (int, time.Time) {
 	t := time.Now().UTC()
 	purged := e.index.Burn()
+	if e.store != nil {
+		_ = e.store.Burn()
+	}
 	log.Printf("[AUDIT] burned %d entries at %s\n", purged, t.Format(time.RFC3339))
 	return purged, t
 }
@@ -298,6 +310,16 @@ func (e *Engine) Ingest(raw []byte) error {
 	}
 
 	e.receivedCount.Add(1)
+
+	// Ingest-time redaction if enabled
+	if e.redactor != nil {
+		raw = e.redactor.Redact(raw)
+	}
+
+	// Disk persistence if enabled
+	if e.store != nil {
+		_ = e.store.Append(raw)
+	}
 
 	payload := make([]byte, len(raw))
 	copy(payload, raw)
@@ -458,4 +480,8 @@ func (e *Engine) Close() {
 
 	e.cancel()
 	e.wg.Wait()
+
+	if e.store != nil {
+		_ = e.store.Close()
+	}
 }

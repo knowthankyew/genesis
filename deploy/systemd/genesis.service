@@ -1,0 +1,28 @@
+[Unit]
+Description=Genesis - High-Performance In-Memory Telemetry Engine
+Documentation=https://github.com/knowthankyew/genesis
+After=network.target
+
+[Service]
+Type=simple
+User=genesis
+Group=genesis
+ExecStart=/usr/local/bin/genesis server \
+    -tcp=127.0.0.1:9000 \
+    -udp=127.0.0.1:9001 \
+    -syslog=127.0.0.1:5514 \
+    -http=127.0.0.1:8080 \
+    -max-mem-mb=350
+
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+
+# Hardened sandboxing
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

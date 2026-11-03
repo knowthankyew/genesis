@@ -22,8 +22,14 @@ func RunTail(args []string) error {
 	level := fs.String("level", "", "Filter by log level")
 	service := fs.String("service", "", "Filter by service name")
 	grep := fs.String("grep", "", "Search substring in message")
+	token := fs.String("token", "", "Bearer auth token (or GENESIS_AUTH_TOKEN)")
 	_ = fs.Bool("f", true, "Follow stream (standard flag)")
 	_ = fs.Parse(args)
+
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("GENESIS_AUTH_TOKEN")
+	}
 
 	params := url.Values{}
 	if *level != "" {
@@ -44,6 +50,9 @@ func RunTail(args []string) error {
 		return fmt.Errorf("failed to create tail request: %w", err)
 	}
 	req.Header.Set("Accept", "text/event-stream")
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
 
 	client := &http.Client{Timeout: 0}
 	resp, err := client.Do(req)

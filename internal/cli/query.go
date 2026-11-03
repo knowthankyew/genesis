@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -23,7 +24,13 @@ func RunQuery(args []string) error {
 	grep := fs.String("grep", "", "Search substring in message")
 	limit := fs.Int("limit", 100, "Maximum number of logs to return")
 	asJSON := fs.Bool("json", false, "Output raw JSON")
+	token := fs.String("token", "", "Bearer authentication token (or GENESIS_AUTH_TOKEN)")
 	_ = fs.Parse(args)
+
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("GENESIS_AUTH_TOKEN")
+	}
 
 	dur, err := time.ParseDuration(*since)
 	if err != nil {
@@ -51,7 +58,15 @@ func RunQuery(args []string) error {
 	baseURL := strings.TrimRight(*httpURL, "/")
 	reqURL := fmt.Sprintf("%s/query?%s", baseURL, params.Encode())
 
-	resp, err := http.Get(reqURL)
+	req, err := http.NewRequest("GET", reqURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create query request: %w", err)
+	}
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("query request failed: %w", err)
 	}

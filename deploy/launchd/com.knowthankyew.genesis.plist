@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.knowthankyew.genesis</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/genesis</string>
+        <string>server</string>
+        <string>-tcp=127.0.0.1:9000</string>
+        <string>-udp=127.0.0.1:9001</string>
+        <string>-syslog=127.0.0.1:5514</string>
+        <string>-http=127.0.0.1:8080</string>
+        <string>-max-mem-mb=350</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/genesis.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/genesis.error.log</string>
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+</dict>
+</plist>

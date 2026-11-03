@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/knowthankyew/genesis/internal/engine"
@@ -15,10 +16,24 @@ func RunStats(args []string) error {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
 	httpURL := fs.String("http", "http://127.0.0.1:8080", "Genesis HTTP address")
 	asJSON := fs.Bool("json", false, "Output raw JSON")
+	token := fs.String("token", "", "Bearer auth token (or GENESIS_AUTH_TOKEN)")
 	_ = fs.Parse(args)
 
+	authToken := *token
+	if authToken == "" {
+		authToken = os.Getenv("GENESIS_AUTH_TOKEN")
+	}
+
 	baseURL := strings.TrimRight(*httpURL, "/")
-	resp, err := http.Get(baseURL + "/stats")
+	req, err := http.NewRequest("GET", baseURL+"/stats", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create stats request: %w", err)
+	}
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to reach Genesis stats at %s: %w", baseURL, err)
 	}

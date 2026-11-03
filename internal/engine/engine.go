@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,55 +17,69 @@ import (
 
 var (
 	ErrBackpressure = errors.New("pipeline backpressure: queue saturated")
+	ErrStopped      = errors.New("engine is stopped or closing")
 )
 
-// EngineConfig holds tuning options for the ingestion & query engine.
 type EngineConfig struct {
-	MaxMemoryBytes  int64
-	QueueCapacity   int
+	MaxMemoryBytes   int64
+	QueueCapacity    int
 	PriorityQueueCap int
-	NumWorkers      int
+	NumWorkers       int
+	MaxLineLength    int
 }
 
-// Stats tracks pipeline throughput, memory, and latency metrics.
+type DroppedStats struct {
+	QueueFull atomic.Uint64 `json:"queue_full"`
+	Malformed atomic.Uint64 `json:"malformed"`
+	Stopped   atomic.Uint64 `json:"stopped"`
+}
+
 type Stats struct {
-	IngestedCount   uint64 `json:"ingested_count"`
-	PriorityCount   uint64 `json:"priority_count"`
-	DroppedCount    uint64 `json:"dropped_count"`
-	CurrentMemory   int64  `json:"current_memory_bytes"`
-	ActiveRecords   int    `json:"active_records"`
-	UptimeSeconds   int64  `json:"uptime_seconds"`
+	ReceivedCount  uint64         `json:"received"`
+	IndexedCount   uint64         `json:"indexed"`
+	PriorityCount  uint64         `json:"priority"`
+	Dropped        map[string]uint64 `json:"dropped"`
+	Evicted        uint64         `json:"evicted"`
+	Partitions     int            `json:"partitions"`
+	AccountedBytes int64          `json:"accounted_bytes"`
+	HeapBytes      uint64         `json:"heap_bytes"`
+	QueueDepths    map[string]int `json:"queue_depths"`
+	UptimeSeconds  int64          `json:"uptime_seconds"`
 }
 
-// Engine coordinates the worker parser pool, backpressure channels, index, and query API.
 type Engine struct {
-	index       *index.StoreIndex
-	normalCh    chan []byte
-	priorityCh  chan []byte
-	numWorkers  int
-	idCounter   atomic.Uint64
-	startTime   time.Time
+	index         *index.StoreIndex
+	normalCh      chan []byte
+	priorityCh    chan []byte
+	numWorkers    int
+	maxLineLength int
+	idCounter     atomic.Uint64
+	startTime     time.Time
+	closing       atomic.Bool
 
 	// Metrics
-	ingestedCount atomic.Uint64
+	receivedCount atomic.Uint64
+	indexedCount  atomic.Uint64
 	priorityCount atomic.Uint64
-	droppedCount  atomic.Uint64
+	dropped       DroppedStats
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
-// NewEngine initializes the core Genesis engine.
 func NewEngine(cfg EngineConfig) *Engine {
 	if cfg.QueueCapacity <= 0 {
-		cfg.QueueCapacity = 100000
+		cfg.QueueCapacity = 200000
 	}
 	if cfg.PriorityQueueCap <= 0 {
-		cfg.PriorityQueueCap = 25000
+		cfg.PriorityQueueCap = 50000
 	}
 	if cfg.NumWorkers <= 0 {
 		cfg.NumWorkers = runtime.NumCPU() * 2
+	}
+	if cfg.MaxLineLength <= 0 {
+		cfg.MaxLineLength = parser.DefaultMaxLineLength
 	}
 
 	idx := index.NewStoreIndex(index.IndexConfig{
@@ -76,13 +89,14 @@ func NewEngine(cfg EngineConfig) *Engine {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	e := &Engine{
-		index:       idx,
-		normalCh:    make(chan []byte, cfg.QueueCapacity),
-		priorityCh:  make(chan []byte, cfg.PriorityQueueCap),
-		numWorkers:  cfg.NumWorkers,
-		startTime:   time.Now(),
-		ctx:         ctx,
-		cancel:      cancel,
+		index:         idx,
+		normalCh:      make(chan []byte, cfg.QueueCapacity),
+		priorityCh:    make(chan []byte, cfg.PriorityQueueCap),
+		numWorkers:    cfg.NumWorkers,
+		maxLineLength: cfg.MaxLineLength,
+		startTime:     time.Now(),
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 
 	e.startWorkers()
@@ -96,20 +110,25 @@ func (e *Engine) startWorkers() {
 	}
 }
 
-// workerLoop drains priority channel first, then normal channel.
 func (e *Engine) workerLoop() {
 	defer e.wg.Done()
 
 	for {
 		select {
-		case <-e.ctx.Done():
-			return
 		case raw := <-e.priorityCh:
 			e.processRawLog(raw)
 		default:
 			select {
 			case <-e.ctx.Done():
-				return
+				// Drain remaining priority items before exiting
+				for {
+					select {
+					case raw := <-e.priorityCh:
+						e.processRawLog(raw)
+					default:
+						return
+					}
+				}
 			case raw := <-e.priorityCh:
 				e.processRawLog(raw)
 			case raw := <-e.normalCh:
@@ -121,54 +140,60 @@ func (e *Engine) workerLoop() {
 
 func (e *Engine) processRawLog(raw []byte) {
 	id := e.idCounter.Add(1)
-	entry, err := parser.ParseLogLine(id, raw)
+	entry, err := parser.ParseLogLine(id, raw, e.maxLineLength)
 	if err != nil {
+		e.dropped.Malformed.Add(1)
 		return
 	}
 	e.index.Insert(entry)
-	e.ingestedCount.Add(1)
+	e.indexedCount.Add(1)
 }
 
-// Ingest handles ingestion of raw log bytes with backpressure management.
-// Critical error logs are prioritized and will never be dropped.
+// Ingest routes logs into priority or normal lanes.
+// Priority routing is based on the PARSED log level (not substring).
 func (e *Engine) Ingest(raw []byte) error {
-	// Defensive copy if buffer is reused by socket reader
+	if e.closing.Load() {
+		e.dropped.Stopped.Add(1)
+		return ErrStopped
+	}
+
+	e.receivedCount.Add(1)
+
 	payload := make([]byte, len(raw))
 	copy(payload, raw)
 
-	isCritical := bytes.Contains(payload, []byte("|ERROR|")) ||
-		bytes.Contains(payload, []byte("|FATAL|"))
+	// Route based on parsed log level (Fix #3)
+	level := parser.ExtractLevel(payload)
+	isCritical := level == "ERROR" || level == "FATAL"
 
 	if isCritical {
-		// Priority channel with blocking delivery to guarantee no error logs are dropped
 		select {
 		case e.priorityCh <- payload:
 			e.priorityCount.Add(1)
 			return nil
 		case <-e.ctx.Done():
-			return errors.New("engine stopped")
+			e.dropped.Stopped.Add(1)
+			return ErrStopped
 		}
 	}
 
-	// Normal channel: try non-blocking push
+	// Normal lane
 	select {
 	case e.normalCh <- payload:
 		return nil
 	default:
-		// Queue full: apply backpressure or graceful drop
-		e.droppedCount.Add(1)
+		e.dropped.QueueFull.Add(1)
 		return ErrBackpressure
 	}
 }
 
-// QueryRequest parameters
 type QueryResponse struct {
 	Count     int               `json:"count"`
 	LatencyUs int64             `json:"latency_us"`
 	Logs      []parser.LogEntry `json:"logs"`
 }
 
-// HandleQuery processes GET /query?start=1730000000&end=1730003600&level=ERROR&service=auth-api
+// HandleQuery processes GET /query with input validation (Fix #7)
 func (e *Engine) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	startTs := time.Now()
 
@@ -178,25 +203,52 @@ func (e *Engine) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	level := query.Get("level")
 	service := query.Get("service")
 	limitStr := query.Get("limit")
+	order := query.Get("order")
 
 	var start, end int64
+	var err error
+
 	if startStr != "" {
-		start, _ = strconv.ParseInt(startStr, 10, 64)
+		start, err = strconv.ParseInt(startStr, 10, 64)
+		if err != nil || start < 0 {
+			http.Error(w, `{"error":"invalid 'start' parameter"}`, http.StatusBadRequest)
+			return
+		}
 	}
+
 	if endStr != "" {
-		end, _ = strconv.ParseInt(endStr, 10, 64)
+		end, err = strconv.ParseInt(endStr, 10, 64)
+		if err != nil || end < 0 {
+			http.Error(w, `{"error":"invalid 'end' parameter"}`, http.StatusBadRequest)
+			return
+		}
 	} else {
-		end = 1<<62 - 1 // max time
+		end = 1<<62 - 1
+	}
+
+	if end < start {
+		http.Error(w, `{"error":"'end' cannot be less than 'start'"}`, http.StatusBadRequest)
+		return
 	}
 
 	limit := 100
 	if limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-			limit = l
+		l, err := strconv.Atoi(limitStr)
+		if err != nil || l <= 0 {
+			http.Error(w, `{"error":"invalid 'limit' parameter"}`, http.StatusBadRequest)
+			return
 		}
+		if l > 10000 {
+			l = 10000
+		}
+		limit = l
 	}
 
-	entries := e.index.Query(start, end, level, service, limit)
+	if order != "desc" {
+		order = "asc"
+	}
+
+	entries := e.index.Query(start, end, level, service, limit, order)
 	latency := time.Since(startTs).Microseconds()
 
 	resp := QueryResponse{
@@ -209,28 +261,57 @@ func (e *Engine) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// HandleStats returns runtime metrics.
+// HandleStats returns full pipeline statistics (Fix #10)
 func (e *Engine) HandleStats(w http.ResponseWriter, r *http.Request) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
 	stats := Stats{
-		IngestedCount: e.ingestedCount.Load(),
-		PriorityCount: e.priorityCount.Load(),
-		DroppedCount:  e.droppedCount.Load(),
-		CurrentMemory: e.index.CurrentMemoryUsage(),
-		ActiveRecords: e.index.TotalRecords(),
-		UptimeSeconds: int64(time.Since(e.startTime).Seconds()),
+		ReceivedCount:  e.receivedCount.Load(),
+		IndexedCount:   e.indexedCount.Load(),
+		PriorityCount:  e.priorityCount.Load(),
+		Dropped: map[string]uint64{
+			"queue_full": e.dropped.QueueFull.Load(),
+			"malformed":  e.dropped.Malformed.Load(),
+			"stopped":    e.dropped.Stopped.Load(),
+		},
+		Evicted:        e.index.EvictedCount(),
+		Partitions:     e.index.PartitionCount(),
+		AccountedBytes: e.index.CurrentMemoryUsage(),
+		HeapBytes:      m.HeapAlloc,
+		QueueDepths: map[string]int{
+			"normal":   len(e.normalCh),
+			"priority": len(e.priorityCh),
+		},
+		UptimeSeconds:  int64(time.Since(e.startTime).Seconds()),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(stats)
 }
 
-// QueryDirect allows in-process querying for benchmark tests.
-func (e *Engine) QueryDirect(start, end int64, level, service string, limit int) []parser.LogEntry {
-	return e.index.Query(start, end, level, service, limit)
+func (e *Engine) QueryDirect(start, end int64, level, service string, limit int, order string) []parser.LogEntry {
+	return e.index.Query(start, end, level, service, limit, order)
 }
 
-// Close gracefully stops the engine.
+func (e *Engine) IndexedCount() uint64 {
+	return e.indexedCount.Load()
+}
+
+func (e *Engine) CurrentMemoryUsage() int64 {
+	return e.index.CurrentMemoryUsage()
+}
+
+// Close gracefully stops the engine and guarantees draining priority queue (Fix #4)
 func (e *Engine) Close() {
+	e.closing.Store(true)
+
+	// Wait up to 3s for priority channel to drain
+	deadline := time.Now().Add(3 * time.Second)
+	for len(e.priorityCh) > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+
 	e.cancel()
 	e.wg.Wait()
 }

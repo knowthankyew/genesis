@@ -4,6 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"sync"
+	"sync/atomic"
+)
+
+const (
+	DefaultMaxLineLength = 65536 // 64 KB
 )
 
 var (
@@ -11,7 +16,6 @@ var (
 	ErrEmptyInput   = errors.New("empty log line")
 )
 
-// Interned levels for zero-allocation reuse.
 var (
 	levelDebug = "DEBUG"
 	levelInfo  = "INFO"
@@ -20,11 +24,14 @@ var (
 	levelFatal = "FATAL"
 )
 
-// Fast string pool for common service names.
 var servicePool = sync.Map{}
+var truncatedLines atomic.Uint64
+
+func TruncatedLinesCount() uint64 {
+	return truncatedLines.Load()
+}
 
 func internService(b []byte) string {
-	// Look up without allocation if possible
 	if s, ok := servicePool.Load(string(b)); ok {
 		return s.(string)
 	}
@@ -48,6 +55,28 @@ func internLevel(b []byte) string {
 	default:
 		return string(b)
 	}
+}
+
+// ExtractLevel parses only field 3 (LogLevel) to accurately route to priority lane.
+// Format: <timestamp>|<service>|<level>|...
+func ExtractLevel(raw []byte) string {
+	idx1 := bytes.IndexByte(raw, '|')
+	if idx1 == -1 {
+		return ""
+	}
+	rest := raw[idx1+1:]
+
+	idx2 := bytes.IndexByte(rest, '|')
+	if idx2 == -1 {
+		return ""
+	}
+	rest = rest[idx2+1:]
+
+	idx3 := bytes.IndexByte(rest, '|')
+	if idx3 == -1 {
+		return internLevel(bytes.TrimRight(rest, "\r\n"))
+	}
+	return internLevel(rest[:idx3])
 }
 
 // LogEntry represents a parsed, structured log object.
@@ -76,25 +105,28 @@ func FastParseTimestamp(b []byte) (int64, error) {
 	return n, nil
 }
 
-// ParseLogLine parses a raw byte slice into a structured LogEntry.
-// Expected format: <timestamp>|<service>|<level>|<trace_id>|<message>
-// Performs zero-copy slicing for string fields and interning where possible.
-func ParseLogLine(id uint64, raw []byte) (LogEntry, error) {
-	// Trim trailing newline or carriage return
+// ParseLogLine parses a raw byte slice into a structured LogEntry with maxLineLen truncation.
+func ParseLogLine(id uint64, raw []byte, maxLineLen int) (LogEntry, error) {
+	if maxLineLen <= 0 {
+		maxLineLen = DefaultMaxLineLength
+	}
+
 	raw = bytes.TrimRight(raw, "\r\n")
 	if len(raw) == 0 {
 		return LogEntry{}, ErrEmptyInput
 	}
 
-	sizeBytes := len(raw)
+	if len(raw) > maxLineLen {
+		raw = raw[:maxLineLen]
+		truncatedLines.Add(1)
+	}
 
 	// Field 1: Timestamp
 	idx1 := bytes.IndexByte(raw, '|')
 	if idx1 == -1 {
 		return LogEntry{}, ErrMalformedLog
 	}
-	tsBytes := raw[:idx1]
-	ts, err := FastParseTimestamp(tsBytes)
+	ts, err := FastParseTimestamp(raw[:idx1])
 	if err != nil {
 		return LogEntry{}, err
 	}
@@ -124,6 +156,15 @@ func ParseLogLine(id uint64, raw []byte) (LogEntry, error) {
 	traceID := string(rest[:idx4])
 	message := string(rest[idx4+1:])
 
+	// Calibrated memory overhead per entry in 64-bit runtime:
+	// - LogEntry struct on heap / map slot: ~88 bytes
+	// - Map node & bucket overhead: ~48 bytes
+	// - SkipList SkipNode + forward slice: ~64 bytes
+	// - Inverted indices map nodes: ~32 bytes
+	// - String contents: len(traceID) + len(message)
+	// Base calibrated overhead: ~240 bytes + string lengths
+	sizeBytes := 240 + len(traceID) + len(message)
+
 	return LogEntry{
 		ID:        id,
 		Timestamp: ts,
@@ -131,6 +172,6 @@ func ParseLogLine(id uint64, raw []byte) (LogEntry, error) {
 		Level:     level,
 		TraceID:   traceID,
 		Message:   message,
-		SizeBytes: sizeBytes + 64, // estimated in-memory footprint with struct overhead
+		SizeBytes: sizeBytes,
 	}, nil
 }

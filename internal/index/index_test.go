@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"project-genesis/internal/parser"
+	"github.com/knowthankyew/genesis/internal/parser"
 )
 
 func TestStoreIndex_Basic(t *testing.T) {

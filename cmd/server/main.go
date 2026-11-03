@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"project-genesis/internal/engine"
+	"github.com/knowthankyew/genesis/internal/engine"
 )
 
 var (

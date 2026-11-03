@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"project-genesis/internal/engine"
+	"github.com/knowthankyew/genesis/internal/engine"
 )
 
 func TestGenesisBenchmarks(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"project-genesis/internal/index"
-	"project-genesis/internal/parser"
+	"github.com/knowthankyew/genesis/internal/index"
+	"github.com/knowthankyew/genesis/internal/parser"
 )
 
 var (

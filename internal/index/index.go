@@ -5,7 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"project-genesis/internal/parser"
+	"github.com/knowthankyew/genesis/internal/parser"
 )
 
 // IndexConfig defines capacity and memory ceiling parameters.

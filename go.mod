@@ -1,3 +1,3 @@
-module project-genesis
+module github.com/knowthankyew/genesis
 
-go 1.27.1
+go 1.24

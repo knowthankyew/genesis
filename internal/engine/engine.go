@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"net/http"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,6 +51,14 @@ type Stats struct {
 	UptimeSeconds  int64          `json:"uptime_seconds"`
 }
 
+type tailSubscriber struct {
+	id      uint64
+	ch      chan parser.LogEntry
+	level   string
+	service string
+	grep    string
+}
+
 type Engine struct {
 	index         *index.StoreIndex
 	normalCh      chan []byte
@@ -63,6 +74,11 @@ type Engine struct {
 	indexedCount  atomic.Uint64
 	priorityCount atomic.Uint64
 	dropped       DroppedStats
+
+	// Live Tail Subscribers
+	tailMu      sync.RWMutex
+	tailSubs    map[uint64]*tailSubscriber
+	tailCounter atomic.Uint64
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -104,6 +120,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		startTime:     time.Now(),
 		ctx:           ctx,
 		cancel:        cancel,
+		tailSubs:      make(map[uint64]*tailSubscriber),
 	}
 
 	e.startWorkers()
@@ -147,13 +164,129 @@ func (e *Engine) workerLoop() {
 
 func (e *Engine) processRawLog(raw []byte) {
 	id := e.idCounter.Add(1)
-	entry, err := parser.ParseLogLine(id, raw, e.maxLineLength)
+	entry, err := parser.ParseAny(id, raw, e.maxLineLength, "genesis")
 	if err != nil {
 		e.dropped.Malformed.Add(1)
 		return
 	}
 	e.index.Insert(entry)
 	e.indexedCount.Add(1)
+	e.broadcastTail(entry)
+}
+
+func (e *Engine) broadcastTail(entry parser.LogEntry) {
+	e.tailMu.RLock()
+	if len(e.tailSubs) == 0 {
+		e.tailMu.RUnlock()
+		return
+	}
+
+	for _, sub := range e.tailSubs {
+		if sub.service != "" && entry.Service != sub.service {
+			continue
+		}
+		if sub.level != "" && entry.Level != sub.level {
+			continue
+		}
+		if sub.grep != "" && !strings.Contains(strings.ToLower(entry.Message), sub.grep) {
+			continue
+		}
+		select {
+		case sub.ch <- entry:
+		default:
+			// slow client, do not block ingestion pipeline
+		}
+	}
+	e.tailMu.RUnlock()
+}
+
+func (e *Engine) subscribeTail(level, service, grep string) *tailSubscriber {
+	sub := &tailSubscriber{
+		id:      e.tailCounter.Add(1),
+		ch:      make(chan parser.LogEntry, 512),
+		level:   level,
+		service: service,
+		grep:    strings.ToLower(grep),
+	}
+	e.tailMu.Lock()
+	e.tailSubs[sub.id] = sub
+	e.tailMu.Unlock()
+	return sub
+}
+
+func (e *Engine) unsubscribeTail(sub *tailSubscriber) {
+	e.tailMu.Lock()
+	delete(e.tailSubs, sub.id)
+	close(sub.ch)
+	e.tailMu.Unlock()
+}
+
+// HandleTail streams real-time matching logs via Server-Sent Events (SSE).
+func (e *Engine) HandleTail(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	query := r.URL.Query()
+	level := query.Get("level")
+	service := query.Get("service")
+	grep := query.Get("grep")
+
+	sub := e.subscribeTail(level, service, grep)
+	defer e.unsubscribeTail(sub)
+
+	fmt.Fprintf(w, ": connected\n\n")
+	flusher.Flush()
+
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case entry, ok := <-sub.ch:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(entry)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
+}
+
+// Burn completely purges all in-memory records and logs an audit line.
+func (e *Engine) Burn() (int, time.Time) {
+	t := time.Now().UTC()
+	purged := e.index.Burn()
+	log.Printf("[AUDIT] burned %d entries at %s\n", purged, t.Format(time.RFC3339))
+	return purged, t
+}
+
+// HandleBurn processes DELETE /logs (or POST /burn) to purge the index.
+func (e *Engine) HandleBurn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed; use DELETE"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	purged, t := e.Burn()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":    "burned",
+		"purged":    purged,
+		"timestamp": t.Format(time.RFC3339),
+		"message":   fmt.Sprintf("burned %d entries at %s", purged, t.Format(time.RFC3339)),
+	})
 }
 
 // Ingest routes logs into priority or normal lanes.
@@ -209,6 +342,10 @@ func (e *Engine) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	endStr := query.Get("end")
 	level := query.Get("level")
 	service := query.Get("service")
+	grep := query.Get("grep")
+	if grep == "" {
+		grep = query.Get("q")
+	}
 	limitStr := query.Get("limit")
 	order := query.Get("order")
 
@@ -255,7 +392,7 @@ func (e *Engine) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		order = "asc"
 	}
 
-	entries := e.index.Query(start, end, level, service, limit, order)
+	entries := e.index.Query(start, end, level, service, grep, limit, order)
 	latency := time.Since(startTs).Microseconds()
 
 	resp := QueryResponse{
@@ -297,8 +434,8 @@ func (e *Engine) HandleStats(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(stats)
 }
 
-func (e *Engine) QueryDirect(start, end int64, level, service string, limit int, order string) []parser.LogEntry {
-	return e.index.Query(start, end, level, service, limit, order)
+func (e *Engine) QueryDirect(start, end int64, level, service, grep string, limit int, order string) []parser.LogEntry {
+	return e.index.Query(start, end, level, service, grep, limit, order)
 }
 
 func (e *Engine) IndexedCount() uint64 {

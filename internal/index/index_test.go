@@ -36,7 +36,7 @@ func TestStoreIndex_Basic(t *testing.T) {
 		idx.Insert(entry)
 	}
 
-	results := idx.Query(1000, 1100, "ERROR", "auth-api", 50, "asc")
+	results := idx.Query(1000, 1100, "ERROR", "auth-api", "", 50, "asc")
 	if len(results) != 10 {
 		t.Fatalf("expected 10 results, got %d", len(results))
 	}
@@ -223,7 +223,7 @@ func TestStoreIndex_Oracle(t *testing.T) {
 			expected = expected[:limit]
 		}
 
-		actual := idx.Query(start, end, filterLevel, filterService, limit, order)
+		actual := idx.Query(start, end, filterLevel, filterService, "", limit, order)
 
 		if len(actual) != len(expected) {
 			t.Fatalf("Query %d mismatch count: expected %d, got %d (start=%d, end=%d, level=%s, service=%s, limit=%d, order=%s)",
@@ -236,5 +236,71 @@ func TestStoreIndex_Oracle(t *testing.T) {
 					q, i, expected[i].ID, expected[i].Timestamp, actual[i].ID, actual[i].Timestamp)
 			}
 		}
+	}
+}
+
+func TestStoreIndex_Grep(t *testing.T) {
+	idx := NewStoreIndex(IndexConfig{MaxMemoryBytes: 10 * 1024 * 1024})
+
+	idx.Insert(parser.LogEntry{ID: 1, Timestamp: 100, Service: "api", Level: "INFO", Message: "User 42 logged in", SizeBytes: 120})
+	idx.Insert(parser.LogEntry{ID: 2, Timestamp: 101, Service: "api", Level: "ERROR", Message: "Database connection failed", SizeBytes: 120})
+	idx.Insert(parser.LogEntry{ID: 3, Timestamp: 102, Service: "api", Level: "WARN", Message: "Database connection slow", SizeBytes: 120})
+	idx.Insert(parser.LogEntry{ID: 4, Timestamp: 103, Service: "worker", Level: "ERROR", Message: "Payment queue overflow", SizeBytes: 120})
+
+	// Grep "database" (case-insensitive)
+	results := idx.Query(0, 200, "", "", "database", 10, "asc")
+	if len(results) != 2 {
+		t.Fatalf("expected 2 matches for grep 'database', got %d", len(results))
+	}
+	if results[0].ID != 2 || results[1].ID != 3 {
+		t.Errorf("unexpected results: %+v", results)
+	}
+
+	// Grep "database" with level "ERROR"
+	results = idx.Query(0, 200, "ERROR", "", "database", 10, "asc")
+	if len(results) != 1 || results[0].ID != 2 {
+		t.Fatalf("expected 1 match for level ERROR + grep 'database', got %+v", results)
+	}
+}
+
+func TestStoreIndex_Burn(t *testing.T) {
+	idx := NewStoreIndex(IndexConfig{MaxMemoryBytes: 10 * 1024 * 1024})
+
+	for i := 1; i <= 50; i++ {
+		idx.Insert(parser.LogEntry{
+			ID:        uint64(i),
+			Timestamp: int64(1000 + i*10),
+			Service:   "test",
+			Level:     "INFO",
+			Message:   "message",
+			SizeBytes: 128,
+		})
+	}
+
+	if idx.TotalRecords() != 50 {
+		t.Fatalf("expected 50 total records before burn, got %d", idx.TotalRecords())
+	}
+	if idx.CurrentMemoryUsage() <= 0 {
+		t.Fatalf("expected non-zero memory usage before burn, got %d", idx.CurrentMemoryUsage())
+	}
+
+	purged := idx.Burn()
+	if purged != 50 {
+		t.Errorf("expected 50 purged records, got %d", purged)
+	}
+	if idx.TotalRecords() != 0 {
+		t.Errorf("expected 0 total records after burn, got %d", idx.TotalRecords())
+	}
+	if idx.CurrentMemoryUsage() != 0 {
+		t.Errorf("expected 0 memory usage after burn, got %d", idx.CurrentMemoryUsage())
+	}
+	if idx.PartitionCount() != 0 {
+		t.Errorf("expected 0 partitions after burn, got %d", idx.PartitionCount())
+	}
+
+	// Query after burn returns empty
+	results := idx.Query(0, 2000, "", "", "", 10, "asc")
+	if len(results) != 0 {
+		t.Errorf("expected 0 query results after burn, got %d", len(results))
 	}
 }

@@ -3,6 +3,7 @@ package parser
 import (
 	"bytes"
 	"errors"
+	"strconv"
 	"sync"
 	"sync/atomic"
 )
@@ -64,26 +65,73 @@ func internLevel(b []byte) string {
 	}
 }
 
-// ExtractLevel parses only field 3 (LogLevel) to accurately route to priority lane.
-// Format: <timestamp>|<service>|<level>|...
+// ExtractLevel parses the log level to accurately route critical logs to the priority lane.
+// Fast paths for Syslog, JSON, Pipe format, and Plain text.
 func ExtractLevel(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	// 1. Syslog format: starts with '<'
+	if raw[0] == '<' {
+		idxClose := bytes.IndexByte(raw, '>')
+		if idxClose > 1 && idxClose <= 5 {
+			pri, err := strconv.Atoi(string(raw[1:idxClose]))
+			if err == nil {
+				severity := pri & 7
+				if severity <= 2 {
+					return levelFatal
+				} else if severity == 3 {
+					return levelError
+				}
+				return ""
+			}
+		}
+	}
+
+	// 2. JSON format: starts with '{'
+	if raw[0] == '{' {
+		lower := bytes.ToLower(raw)
+		if bytes.Contains(lower, []byte(`"level":"fatal"`)) ||
+			bytes.Contains(lower, []byte(`"severity":"fatal"`)) ||
+			bytes.Contains(lower, []byte(`"level":"crit"`)) ||
+			bytes.Contains(lower, []byte(`"severity":"crit"`)) ||
+			bytes.Contains(lower, []byte(`"level":"panic"`)) {
+			return levelFatal
+		}
+		if bytes.Contains(lower, []byte(`"level":"error"`)) ||
+			bytes.Contains(lower, []byte(`"severity":"error"`)) ||
+			bytes.Contains(lower, []byte(`"level":"err"`)) {
+			return levelError
+		}
+		return ""
+	}
+
+	// 3. Pipe format: <timestamp>|<service>|<level>|...
 	idx1 := bytes.IndexByte(raw, '|')
-	if idx1 == -1 {
-		return ""
+	if idx1 != -1 {
+		rest := raw[idx1+1:]
+		idx2 := bytes.IndexByte(rest, '|')
+		if idx2 != -1 {
+			rest = rest[idx2+1:]
+			idx3 := bytes.IndexByte(rest, '|')
+			if idx3 == -1 {
+				return internLevel(bytes.TrimRight(rest, "\r\n"))
+			}
+			return internLevel(rest[:idx3])
+		}
 	}
-	rest := raw[idx1+1:]
 
-	idx2 := bytes.IndexByte(rest, '|')
-	if idx2 == -1 {
-		return ""
+	// 4. Plain text fallback: check for FATAL/ERROR keywords
+	upper := bytes.ToUpper(raw)
+	if bytes.Contains(upper, []byte("FATAL")) || bytes.Contains(upper, []byte("PANIC")) || bytes.Contains(upper, []byte("CRIT")) {
+		return levelFatal
 	}
-	rest = rest[idx2+1:]
+	if bytes.Contains(upper, []byte("ERROR")) {
+		return levelError
+	}
 
-	idx3 := bytes.IndexByte(rest, '|')
-	if idx3 == -1 {
-		return internLevel(bytes.TrimRight(rest, "\r\n"))
-	}
-	return internLevel(rest[:idx3])
+	return ""
 }
 
 // LogEntry represents a parsed, structured log object.

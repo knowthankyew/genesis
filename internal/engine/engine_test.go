@@ -175,3 +175,71 @@ func TestEngine_MemoryCalibration(t *testing.T) {
 			ratio, accounted, heapDelta)
 	}
 }
+
+func TestEngine_Burn_Endpoint(t *testing.T) {
+	eng := NewEngine(EngineConfig{})
+	defer eng.Close()
+
+	for i := 0; i < 20; i++ {
+		_ = eng.Ingest([]byte(fmt.Sprintf("1730000000|auth-api|INFO|tr-%d|Log payload %d\n", i, i)))
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	req := httptest.NewRequest("DELETE", "/logs", nil)
+	w := httptest.NewRecorder()
+	eng.HandleBurn(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode burn response: %v", err)
+	}
+
+	if resp["status"] != "burned" {
+		t.Errorf("expected status 'burned', got %v", resp["status"])
+	}
+	if purged, ok := resp["purged"].(float64); !ok || int(purged) != 20 {
+		t.Errorf("expected 20 purged records, got %v", resp["purged"])
+	}
+	if eng.CurrentMemoryUsage() != 0 {
+		t.Errorf("expected 0 current memory usage after burn, got %d", eng.CurrentMemoryUsage())
+	}
+}
+
+func TestEngine_MultiFormat_Ingest(t *testing.T) {
+	eng := NewEngine(EngineConfig{})
+	defer eng.Close()
+
+	// 1. Syslog RFC 5424
+	_ = eng.Ingest([]byte("<165>1 2026-11-02T22:14:15Z host order-svc 1234 tr-sys - Order created\n"))
+	// 2. JSON Lines
+	_ = eng.Ingest([]byte(`{"service":"payment-svc","level":"error","msg":"Stripe error"}` + "\n"))
+	// 3. Plain text
+	_ = eng.Ingest([]byte("Fatal: Out of file descriptors\n"))
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Check /query for each
+	req := httptest.NewRequest("GET", "/query?grep=Stripe", nil)
+	w := httptest.NewRecorder()
+	eng.HandleQuery(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var qResp QueryResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &qResp); err != nil {
+		t.Fatalf("failed to parse query response: %v", err)
+	}
+
+	if len(qResp.Logs) != 1 {
+		t.Fatalf("expected 1 log matching grep 'Stripe', got %d", len(qResp.Logs))
+	}
+	if qResp.Logs[0].Service != "payment-svc" {
+		t.Errorf("expected service 'payment-svc', got %q", qResp.Logs[0].Service)
+	}
+}

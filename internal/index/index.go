@@ -2,6 +2,7 @@ package index
 
 import (
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -223,7 +224,7 @@ func (idx *StoreIndex) evictOldestPartitions() {
 
 // Query performs multi-field time-range and exact-match filtering.
 // Guarantees mathematically exact (Timestamp, ID) ordering and early exit without heap allocations.
-func (idx *StoreIndex) Query(start, end int64, level, service string, limit int, order string) []parser.LogEntry {
+func (idx *StoreIndex) Query(start, end int64, level, service, grep string, limit int, order string) []parser.LogEntry {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -258,6 +259,7 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int,
 	}
 
 	results := make([]parser.LogEntry, 0, limit)
+	grepLower := strings.ToLower(grep)
 
 	for _, bID := range targetBuckets {
 		idx.partitionsMu.RLock()
@@ -307,6 +309,9 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int,
 			}
 
 			if entry, match := p.records[id]; match {
+				if grepLower != "" && !strings.Contains(strings.ToLower(entry.Message), grepLower) {
+					return true
+				}
 				results = append(results, entry)
 				if len(results) >= limit {
 					return false // Reached limit, terminate early!
@@ -328,6 +333,30 @@ func (idx *StoreIndex) Query(start, end int64, level, service string, limit int,
 		}
 	}
 	return results
+}
+
+// Burn completely purges all partitions and log records from memory,
+// resets memory accounting to 0, and returns the number of purged entries.
+func (idx *StoreIndex) Burn() int {
+	idx.partitionsMu.Lock()
+	defer idx.partitionsMu.Unlock()
+
+	purged := 0
+	for _, p := range idx.partitions {
+		p.mu.Lock()
+		p.evicted = true
+		purged += len(p.records)
+		p.records = nil
+		p.serviceIndex = nil
+		p.levelIndex = nil
+		p.skipList = nil
+		p.mu.Unlock()
+	}
+
+	idx.partitions = make(map[int64]*Partition)
+	idx.currentMemoryBytes.Store(0)
+	idx.evictedCount.Store(0)
+	return purged
 }
 
 // CurrentMemoryUsage returns tracked in-memory byte size.

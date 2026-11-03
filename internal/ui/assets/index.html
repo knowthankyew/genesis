@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GENESIS // Telemetry Engine</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-border: #30363d;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --text-bright: #f0f6fc;
+      --accent: #58a6ff;
+      --accent-hover: #79c0ff;
+      --fatal: #ff7b72;
+      --error: #f85149;
+      --warn: #d29922;
+      --info: #58a6ff;
+      --debug: #8b949e;
+      --burn-bg: #da3633;
+      --burn-hover: #b62324;
+      --code-bg: #090d13;
+      --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    }
+
+    [data-theme="light"] {
+      --bg: #f6f8fa;
+      --surface: #ffffff;
+      --surface-border: #d0d7de;
+      --text: #24292f;
+      --text-muted: #57601a;
+      --text-bright: #0969da;
+      --accent: #0969da;
+      --accent-hover: #218bff;
+      --fatal: #cf222e;
+      --error: #d1242f;
+      --warn: #9a6700;
+      --info: #0969da;
+      --debug: #6e7781;
+      --burn-bg: #cf222e;
+      --burn-hover: #a40e26;
+      --code-bg: #f6f8fa;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.5;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Header & Stats Bar */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--surface-border);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+      font-size: 14px;
+      letter-spacing: 0.05em;
+      color: var(--text-bright);
+    }
+    .brand-tag {
+      font-size: 10px;
+      background: rgba(88, 166, 255, 0.15);
+      color: var(--accent);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: var(--font-mono);
+      font-weight: 600;
+    }
+
+    .stats-bar {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .stat-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg);
+      padding: 4px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--surface-border);
+    }
+    .stat-label { color: var(--text-muted); }
+    .stat-val { font-weight: 600; color: var(--text-bright); }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    button {
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--surface-border);
+      background: var(--surface);
+      color: var(--text-bright);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    button:hover {
+      background: var(--surface-border);
+    }
+    button.primary {
+      background: var(--accent);
+      color: #ffffff;
+      border-color: transparent;
+    }
+    button.primary:hover {
+      background: var(--accent-hover);
+    }
+    button.burn-btn {
+      background: var(--burn-bg);
+      color: #ffffff;
+      border-color: transparent;
+      font-weight: 600;
+    }
+    button.burn-btn:hover {
+      background: var(--burn-hover);
+    }
+
+    /* Filter Toolbar */
+    .toolbar {
+      background: var(--surface);
+      border-bottom: 1px solid var(--surface-border);
+      padding: 8px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+    }
+
+    .input-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .input-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    input, select {
+      font-family: inherit;
+      font-size: 12px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--surface-border);
+      background: var(--bg);
+      color: var(--text-bright);
+      outline: none;
+    }
+    input:focus, select:focus {
+      border-color: var(--accent);
+    }
+    input[type="text"] {
+      min-width: 200px;
+      font-family: var(--font-mono);
+    }
+
+    .live-tail-toggle {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #3fb950;
+      display: inline-block;
+      box-shadow: 0 0 8px #3fb950;
+      opacity: 0.3;
+    }
+    .pulse-dot.active {
+      opacity: 1;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% { transform: scale(0.95); opacity: 0.7; }
+      50% { transform: scale(1.2); opacity: 1; }
+      100% { transform: scale(0.95); opacity: 0.7; }
+    }
+
+    /* Main Log Container */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: var(--code-bg);
+    }
+
+    .log-stream {
+      flex: 1;
+      overflow-y: auto;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.6;
+      padding: 8px 0;
+    }
+
+    .log-row {
+      display: flex;
+      align-items: flex-start;
+      padding: 2px 16px;
+      gap: 12px;
+      border-left: 3px solid transparent;
+      word-break: break-all;
+    }
+    .log-row:hover {
+      background: rgba(255, 255, 255, 0.04);
+    }
+
+    .log-row.fatal { border-left-color: var(--fatal); }
+    .log-row.error { border-left-color: var(--error); }
+    .log-row.warn { border-left-color: var(--warn); }
+    .log-row.info { border-left-color: var(--info); }
+    .log-row.debug { border-left-color: var(--debug); }
+
+    .col-ts { color: var(--text-muted); flex-shrink: 0; min-width: 140px; }
+    .col-lvl {
+      flex-shrink: 0;
+      min-width: 50px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+    .col-lvl.fatal { color: var(--fatal); }
+    .col-lvl.error { color: var(--error); }
+    .col-lvl.warn { color: var(--warn); }
+    .col-lvl.info { color: var(--info); }
+    .col-lvl.debug { color: var(--debug); }
+
+    .col-svc {
+      color: #e3b341;
+      flex-shrink: 0;
+      min-width: 90px;
+      cursor: pointer;
+    }
+    .col-svc:hover { text-decoration: underline; }
+
+    .col-trace {
+      color: #a5d6ff;
+      flex-shrink: 0;
+      min-width: 90px;
+      cursor: pointer;
+    }
+    .col-trace:hover { text-decoration: underline; }
+
+    .col-msg {
+      flex: 1;
+      color: var(--text);
+    }
+    .col-attrs {
+      color: #7ee787;
+      font-size: 11px;
+      margin-left: 8px;
+    }
+
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      gap: 12px;
+      text-align: center;
+    }
+
+    /* Modal */
+    dialog {
+      margin: auto;
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--surface-border);
+      border-radius: 8px;
+      padding: 24px;
+      max-width: 440px;
+      box-shadow: 0 16px 32px rgba(0,0,0,0.5);
+    }
+    dialog::backdrop {
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(2px);
+    }
+    .modal-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--fatal);
+      margin-bottom: 8px;
+    }
+    .modal-body {
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent)"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+      <span>GENESIS</span>
+      <span class="brand-tag">IN-MEMORY ENGINE</span>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-pill">
+        <span class="stat-label">Active:</span>
+        <span class="stat-val" id="stat-active">-</span>
+      </div>
+      <div class="stat-pill">
+        <span class="stat-label">Indexed:</span>
+        <span class="stat-val" id="stat-indexed">-</span>
+      </div>
+      <div class="stat-pill">
+        <span class="stat-label">Heap:</span>
+        <span class="stat-val" id="stat-heap">-</span>
+      </div>
+      <div class="stat-pill">
+        <span class="stat-label">Partitions:</span>
+        <span class="stat-val" id="stat-partitions">-</span>
+      </div>
+    </div>
+
+    <div class="header-actions">
+      <button id="theme-btn" title="Toggle Theme">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+        Theme
+      </button>
+      <button class="burn-btn" id="open-burn-modal">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 3z"></path></svg>
+        Burn All
+      </button>
+    </div>
+  </header>
+
+  <!-- Toolbar -->
+  <div class="toolbar">
+    <div class="input-group">
+      <span class="input-label">Grep:</span>
+      <input type="text" id="filter-grep" placeholder="search message text (regex/substring)...">
+    </div>
+
+    <div class="input-group">
+      <span class="input-label">Level:</span>
+      <select id="filter-level">
+        <option value="">ALL LEVELS</option>
+        <option value="FATAL">FATAL</option>
+        <option value="ERROR">ERROR</option>
+        <option value="WARN">WARN</option>
+        <option value="INFO">INFO</option>
+        <option value="DEBUG">DEBUG</option>
+      </select>
+    </div>
+
+    <div class="input-group">
+      <span class="input-label">Service:</span>
+      <input type="text" id="filter-service" placeholder="service name..." style="min-width:130px;">
+    </div>
+
+    <div class="input-group">
+      <span class="input-label">Limit:</span>
+      <select id="filter-limit">
+        <option value="100">100</option>
+        <option value="500" selected>500</option>
+        <option value="2000">2000</option>
+        <option value="10000">10000</option>
+      </select>
+    </div>
+
+    <button class="primary" id="btn-refresh">Search</button>
+
+    <div class="live-tail-toggle">
+      <span class="pulse-dot active" id="pulse-indicator"></span>
+      <label>
+        <input type="checkbox" id="live-tail-check" checked> Live Tail
+      </label>
+    </div>
+  </div>
+
+  <!-- Log Viewer -->
+  <main>
+    <div class="log-stream" id="log-container">
+      <div class="empty-state" id="empty-state">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+        <p>Listening for telemetry streams... Logs will stream here automatically.</p>
+      </div>
+    </div>
+  </main>
+
+  <!-- Burn Confirmation Modal -->
+  <dialog id="burn-modal">
+    <div class="modal-title">Confirm Amnesiac Purge</div>
+    <div class="modal-body">
+      Are you sure you want to <strong>burn all logs</strong>?<br><br>
+      This instantly clears all memory partitions, skip-lists, and indices.
+      Zero traces will remain on disk or in heap. A single audit line will be recorded.
+    </div>
+    <div class="modal-actions">
+      <button id="cancel-burn">Cancel</button>
+      <button class="burn-btn" id="confirm-burn">Burn Logs Now</button>
+    </div>
+  </dialog>
+
+  <script>
+    const logContainer = document.getElementById('log-container');
+    const emptyState = document.getElementById('empty-state');
+    const pulseIndicator = document.getElementById('pulse-indicator');
+    const liveTailCheck = document.getElementById('live-tail-check');
+    const filterGrep = document.getElementById('filter-grep');
+    const filterLevel = document.getElementById('filter-level');
+    const filterService = document.getElementById('filter-service');
+    const filterLimit = document.getElementById('filter-limit');
+    const btnRefresh = document.getElementById('btn-refresh');
+    const themeBtn = document.getElementById('theme-btn');
+    const burnModal = document.getElementById('burn-modal');
+    const openBurnModalBtn = document.getElementById('open-burn-modal');
+    const cancelBurnBtn = document.getElementById('cancel-burn');
+    const confirmBurnBtn = document.getElementById('confirm-burn');
+
+    let eventSource = null;
+    let isAutoScroll = true;
+
+    // Theme Toggle
+    function initTheme() {
+      const saved = localStorage.getItem('genesis_theme');
+      if (saved) {
+        document.documentElement.setAttribute('data-theme', saved);
+      } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    }
+    themeBtn.addEventListener('click', () => {
+      const curr = document.documentElement.getAttribute('data-theme') || 'dark';
+      const next = curr === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('genesis_theme', next);
+    });
+    initTheme();
+
+    // Stats Poller
+    async function updateStats() {
+      try {
+        const res = await fetch('/stats');
+        if (!res.ok) return;
+        const d = await res.json();
+        document.getElementById('stat-indexed').textContent = Number(d.indexed || 0).toLocaleString();
+        document.getElementById('stat-partitions').textContent = d.partitions || 0;
+        const heapMb = ((d.heap_bytes || 0) / (1024 * 1024)).toFixed(1);
+        document.getElementById('stat-heap').textContent = `${heapMb} MB`;
+        const activeEst = Math.round((d.accounted_bytes || 0) / 360);
+        document.getElementById('stat-active').textContent = activeEst.toLocaleString();
+      } catch (e) {}
+    }
+    setInterval(updateStats, 2000);
+    updateStats();
+
+    // Format Timestamp
+    function formatTs(unixSec) {
+      const d = new Date(unixSec * 1000);
+      return d.toISOString().replace('T', ' ').replace('Z', '');
+    }
+
+    // Render Log Row
+    function createLogRow(entry) {
+      const row = document.createElement('div');
+      const lvl = (entry.level || 'INFO').toLowerCase();
+      row.className = `log-row ${lvl}`;
+
+      const tsCol = document.createElement('span');
+      tsCol.className = 'col-ts';
+      tsCol.textContent = formatTs(entry.timestamp);
+
+      const lvlCol = document.createElement('span');
+      lvlCol.className = `col-lvl ${lvl}`;
+      lvlCol.textContent = entry.level || 'INFO';
+
+      const svcCol = document.createElement('span');
+      svcCol.className = 'col-svc';
+      svcCol.textContent = entry.service || '-';
+      svcCol.addEventListener('click', () => {
+        filterService.value = entry.service;
+        applySearch();
+      });
+
+      const traceCol = document.createElement('span');
+      traceCol.className = 'col-trace';
+      traceCol.textContent = entry.trace_id || '-';
+      traceCol.addEventListener('click', () => {
+        if (entry.trace_id) {
+          filterGrep.value = entry.trace_id;
+          applySearch();
+        }
+      });
+
+      const msgCol = document.createElement('span');
+      msgCol.className = 'col-msg';
+      msgCol.textContent = entry.message || '';
+
+      if (entry.attributes && Object.keys(entry.attributes).length > 0) {
+        const attrsSpan = document.createElement('span');
+        attrsSpan.className = 'col-attrs';
+        attrsSpan.textContent = JSON.stringify(entry.attributes);
+        msgCol.appendChild(attrsSpan);
+      }
+
+      row.appendChild(tsCol);
+      row.appendChild(lvlCol);
+      row.appendChild(svcCol);
+      row.appendChild(traceCol);
+      row.appendChild(msgCol);
+      return row;
+    }
+
+    function appendLog(entry) {
+      if (emptyState.parentNode) {
+        emptyState.remove();
+      }
+      const row = createLogRow(entry);
+      logContainer.appendChild(row);
+
+      // Keep max 2000 elements in DOM
+      if (logContainer.children.length > 2000) {
+        logContainer.removeChild(logContainer.children[0]);
+      }
+
+      if (isAutoScroll) {
+        logContainer.scrollTop = logContainer.scrollHeight;
+      }
+    }
+
+    logContainer.addEventListener('scroll', () => {
+      const atBottom = logContainer.scrollHeight - logContainer.scrollTop - logContainer.clientHeight < 30;
+      isAutoScroll = atBottom;
+    });
+
+    // Query Search
+    async function applySearch() {
+      const params = new URLSearchParams();
+      if (filterGrep.value.trim()) params.set('grep', filterGrep.value.trim());
+      if (filterLevel.value) params.set('level', filterLevel.value);
+      if (filterService.value.trim()) params.set('service', filterService.value.trim());
+      params.set('limit', filterLimit.value);
+      params.set('order', 'asc');
+
+      try {
+        const res = await fetch(`/query?${params.toString()}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        logContainer.innerHTML = '';
+        if (!data.logs || data.logs.length === 0) {
+          logContainer.appendChild(emptyState);
+          return;
+        }
+        for (const log of data.logs) {
+          logContainer.appendChild(createLogRow(log));
+        }
+        logContainer.scrollTop = logContainer.scrollHeight;
+      } catch (e) {}
+
+      if (liveTailCheck.checked) {
+        startLiveTail();
+      }
+    }
+
+    // SSE Live Tail
+    function startLiveTail() {
+      if (eventSource) {
+        eventSource.close();
+      }
+      const params = new URLSearchParams();
+      if (filterGrep.value.trim()) params.set('grep', filterGrep.value.trim());
+      if (filterLevel.value) params.set('level', filterLevel.value);
+      if (filterService.value.trim()) params.set('service', filterService.value.trim());
+
+      pulseIndicator.classList.add('active');
+      eventSource = new EventSource(`/tail?${params.toString()}`);
+
+      eventSource.onmessage = (event) => {
+        try {
+          const entry = JSON.parse(event.data);
+          appendLog(entry);
+        } catch (e) {}
+      };
+
+      eventSource.onerror = () => {
+        pulseIndicator.classList.remove('active');
+      };
+    }
+
+    function stopLiveTail() {
+      if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+      }
+      pulseIndicator.classList.remove('active');
+    }
+
+    liveTailCheck.addEventListener('change', () => {
+      if (liveTailCheck.checked) {
+        startLiveTail();
+      } else {
+        stopLiveTail();
+      }
+    });
+
+    btnRefresh.addEventListener('click', applySearch);
+    filterGrep.addEventListener('keydown', (e) => { if (e.key === 'Enter') applySearch(); });
+    filterService.addEventListener('keydown', (e) => { if (e.key === 'Enter') applySearch(); });
+    filterLevel.addEventListener('change', applySearch);
+
+    // Amnesiac Purge (Burn) Modal Handlers
+    openBurnModalBtn.addEventListener('click', () => { burnModal.showModal(); });
+    cancelBurnBtn.addEventListener('click', () => { burnModal.close(); });
+    confirmBurnBtn.addEventListener('click', async () => {
+      try {
+        const res = await fetch('/logs', { method: 'DELETE' });
+        if (res.ok) {
+          logContainer.innerHTML = '';
+          logContainer.appendChild(emptyState);
+          updateStats();
+        }
+      } catch (e) {}
+      burnModal.close();
+    });
+
+    // Start live tail on initial load
+    startLiveTail();
+  </script>
+</body>
+</html>

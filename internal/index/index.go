@@ -225,6 +225,11 @@ func (idx *StoreIndex) evictOldestPartitions() {
 // Query performs multi-field time-range and exact-match filtering.
 // Guarantees mathematically exact (Timestamp, ID) ordering and early exit without heap allocations.
 func (idx *StoreIndex) Query(start, end int64, level, service, grep string, limit int, order string) []parser.LogEntry {
+	return idx.QueryWithTrace(start, end, level, service, "", grep, limit, order)
+}
+
+// QueryWithTrace performs multi-field time-range, exact-match (level, service, trace), and substring grep filtering.
+func (idx *StoreIndex) QueryWithTrace(start, end int64, level, service, trace, grep string, limit int, order string) []parser.LogEntry {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -309,7 +314,12 @@ func (idx *StoreIndex) Query(start, end int64, level, service, grep string, limi
 			}
 
 			if entry, match := p.records[id]; match {
-				if grepLower != "" && !strings.Contains(strings.ToLower(entry.Message), grepLower) {
+				if trace != "" && entry.TraceID != trace {
+					return true
+				}
+				if grepLower != "" &&
+					!strings.Contains(strings.ToLower(entry.Message), grepLower) &&
+					!strings.Contains(strings.ToLower(entry.TraceID), grepLower) {
 					return true
 				}
 				results = append(results, entry)

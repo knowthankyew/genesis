@@ -136,3 +136,46 @@ func TestStorage_Burn(t *testing.T) {
 
 	_ = store.Close()
 }
+
+func TestStorage_PruneMaxBytes(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Write 3 inactive segment files and 1 active segment file
+	for i := 1; i <= 3; i++ {
+		segPath := filepath.Join(tmpDir, fmt.Sprintf("%08d.seg", i))
+		if err := os.WriteFile(segPath, bytes.Repeat([]byte("A"), 1024), 0644); err != nil {
+			t.Fatalf("failed to write test segment %d: %v", i, err)
+		}
+	}
+
+	store, err := Open(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Append to active segment (00000004.seg)
+	_ = store.Append(bytes.Repeat([]byte("B"), 500))
+	_ = store.Flush()
+
+	// Total size is ~3572 bytes. Prune to maxBytes = 2000 bytes.
+	// Should delete 00000001.seg and 00000002.seg, keeping 00000003.seg (1024B) + 00000004.seg (~512B) <= 2000B.
+	if err := store.Prune(0, 2000); err != nil {
+		t.Fatalf("Prune failed: %v", err)
+	}
+
+	entries, _ := os.ReadDir(tmpDir)
+	var segs []string
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".seg" {
+			segs = append(segs, e.Name())
+		}
+	}
+
+	if len(segs) != 2 {
+		t.Fatalf("expected 2 segments remaining after maxBytes prune, got %d (%v)", len(segs), segs)
+	}
+	if segs[0] != "00000003.seg" || segs[1] != "00000004.seg" {
+		t.Errorf("unexpected remaining segments: %v", segs)
+	}
+}

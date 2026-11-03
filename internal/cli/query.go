@@ -21,6 +21,7 @@ func RunQuery(args []string) error {
 	since := fs.String("since", "1h", "Time window to query (e.g. 15m, 1h, 24h, 30s)")
 	level := fs.String("level", "", "Filter by log level (DEBUG, INFO, WARN, ERROR, FATAL)")
 	service := fs.String("service", "", "Filter by service name")
+	trace := fs.String("trace", "", "Filter by exact trace ID")
 	grep := fs.String("grep", "", "Search substring in message")
 	limit := fs.Int("limit", 100, "Maximum number of logs to return")
 	asJSON := fs.Bool("json", false, "Output raw JSON")
@@ -48,6 +49,9 @@ func RunQuery(args []string) error {
 	}
 	if *service != "" {
 		params.Set("service", *service)
+	}
+	if *trace != "" {
+		params.Set("trace", *trace)
 	}
 	if *grep != "" {
 		params.Set("grep", *grep)

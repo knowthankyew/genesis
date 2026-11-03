@@ -466,6 +466,10 @@
 
     let eventSource = null;
     let isAutoScroll = true;
+    const authToken = new URLSearchParams(window.location.search).get('token') || '';
+    function authHeaders() {
+      return authToken ? { 'Authorization': 'Bearer ' + authToken } : {};
+    }
 
     // Theme Toggle
     function initTheme() {
@@ -487,7 +491,7 @@
     // Stats Poller
     async function updateStats() {
       try {
-        const res = await fetch('/stats');
+        const res = await fetch('/stats', { headers: authHeaders() });
         if (!res.ok) return;
         const d = await res.json();
         document.getElementById('stat-indexed').textContent = Number(d.indexed || 0).toLocaleString();
@@ -590,7 +594,7 @@
       params.set('order', 'asc');
 
       try {
-        const res = await fetch(`/query?${params.toString()}`);
+        const res = await fetch(`/query?${params.toString()}`, { headers: authHeaders() });
         if (!res.ok) return;
         const data = await res.json();
         logContainer.innerHTML = '';
@@ -618,6 +622,7 @@
       if (filterGrep.value.trim()) params.set('grep', filterGrep.value.trim());
       if (filterLevel.value) params.set('level', filterLevel.value);
       if (filterService.value.trim()) params.set('service', filterService.value.trim());
+      if (authToken) params.set('token', authToken);
 
       pulseIndicator.classList.add('active');
       eventSource = new EventSource(`/tail?${params.toString()}`);
@@ -660,7 +665,7 @@
     cancelBurnBtn.addEventListener('click', () => { burnModal.close(); });
     confirmBurnBtn.addEventListener('click', async () => {
       try {
-        const res = await fetch('/logs', { method: 'DELETE' });
+        const res = await fetch('/logs', { method: 'DELETE', headers: authHeaders() });
         if (res.ok) {
           logContainer.innerHTML = '';
           logContainer.appendChild(emptyState);

@@ -54,7 +54,13 @@ func Open(dataDir string) (*DiskStore, error) {
 
 	var nextSegID uint64 = 1
 	if len(segments) > 0 {
-		nextSegID = segments[len(segments)-1] + 1
+		lastID := segments[len(segments)-1]
+		lastPath := filepath.Join(dataDir, fmt.Sprintf("%08d.seg", lastID))
+		if info, err := os.Stat(lastPath); err == nil && info.Size() == 0 {
+			nextSegID = lastID
+		} else {
+			nextSegID = lastID + 1
+		}
 	}
 
 	if err := store.rotateTo(nextSegID); err != nil {
@@ -146,19 +152,18 @@ func (s *DiskStore) Flush() error {
 
 // Replay reads valid entries across all existing segments in order,
 // cleanly discarding any torn/corrupted writes at the end of crash files.
+// Does not hold s.mu while invoking fn to prevent re-entrancy deadlocks.
 func (s *DiskStore) Replay(fn func(raw []byte)) error {
 	if s == nil {
 		return nil
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.activeWriter != nil {
 		_ = s.activeWriter.Flush()
 	}
-
 	segments, err := s.listSegments()
+	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -172,11 +177,15 @@ func (s *DiskStore) Replay(fn func(raw []byte)) error {
 
 		reader := bufio.NewReader(f)
 		var header [MagicHeaderLen]byte
+		var validBytes int64
+		corrupted := false
 
 		for {
 			_, err := io.ReadFull(reader, header[:])
 			if err != nil {
-				// EOF or partial header (torn write) -> segment finished
+				if err != io.EOF {
+					corrupted = true
+				}
 				break
 			}
 
@@ -187,18 +196,25 @@ func (s *DiskStore) Replay(fn func(raw []byte)) error {
 			_, err = io.ReadFull(reader, payload)
 			if err != nil {
 				// Torn payload -> discard incomplete tail
+				corrupted = true
 				break
 			}
 
 			actualChecksum := crc32.ChecksumIEEE(payload)
 			if actualChecksum != expectedChecksum {
 				// Corrupted entry -> discard
+				corrupted = true
 				break
 			}
 
+			validBytes += int64(MagicHeaderLen) + int64(lenVal)
 			fn(payload)
 		}
 		_ = f.Close()
+
+		if corrupted {
+			_ = os.Truncate(segPath, validBytes)
+		}
 	}
 
 	return nil
@@ -245,6 +261,10 @@ func (s *DiskStore) Prune(maxAge time.Duration, maxBytes int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.activeWriter != nil {
+		_ = s.activeWriter.Flush()
+	}
+
 	segments, err := s.listSegments()
 	if err != nil || len(segments) <= 1 {
 		return nil // keep active segment
@@ -253,6 +273,14 @@ func (s *DiskStore) Prune(maxAge time.Duration, maxBytes int64) error {
 	// Never prune the active segment (last in list)
 	candidates := segments[:len(segments)-1]
 	now := time.Now()
+
+	type segInfo struct {
+		id   uint64
+		path string
+		size int64
+	}
+	var remaining []segInfo
+	var totalBytes int64 = s.activeBytes
 
 	for _, segID := range candidates {
 		segPath := filepath.Join(s.dataDir, fmt.Sprintf("%08d.seg", segID))
@@ -263,6 +291,20 @@ func (s *DiskStore) Prune(maxAge time.Duration, maxBytes int64) error {
 
 		if maxAge > 0 && now.Sub(info.ModTime()) > maxAge {
 			_ = os.Remove(segPath)
+			continue
+		}
+
+		remaining = append(remaining, segInfo{id: segID, path: segPath, size: info.Size()})
+		totalBytes += info.Size()
+	}
+
+	if maxBytes > 0 {
+		for len(remaining) > 0 && totalBytes > maxBytes {
+			oldest := remaining[0]
+			remaining = remaining[1:]
+			if err := os.Remove(oldest.path); err == nil {
+				totalBytes -= oldest.size
+			}
 		}
 	}
 

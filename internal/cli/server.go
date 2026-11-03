@@ -95,9 +95,13 @@ func RunServer(args []string) error {
 
 	// Insecure bind check
 	if IsBindingAllInterfaces(cfg.HTTPAddr) && !cfg.AllowAllInterfaces {
+		_, port, err := net.SplitHostPort(cfg.HTTPAddr)
+		if err != nil || port == "" {
+			port = "8080"
+		}
+		cfg.HTTPAddr = "127.0.0.1:" + port
 		log.Println("WARNING: Binding HTTP on all interfaces (:port or 0.0.0.0) without -allow-all-interfaces flag!")
-		log.Println("Defaulting HTTP bind to 127.0.0.1:8080 for security. Use -allow-all-interfaces to override.")
-		cfg.HTTPAddr = "127.0.0.1:8080"
+		log.Printf("Defaulting HTTP bind to %s for security. Use -allow-all-interfaces to override.\n", cfg.HTTPAddr)
 	}
 
 	// 1. Optional Ingest Redactor
@@ -143,7 +147,7 @@ func RunServer(args []string) error {
 	if diskStore != nil {
 		var replayCount int
 		_ = diskStore.Replay(func(raw []byte) {
-			_ = eng.Ingest(raw)
+			_ = eng.IngestReplay(raw)
 			replayCount++
 		})
 		if replayCount > 0 {

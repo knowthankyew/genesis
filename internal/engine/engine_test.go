@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/knowthankyew/genesis/internal/storage"
 )
 
 // Regression Test 3: Priority lane routes by parsed level, not by substring
@@ -241,5 +243,77 @@ func TestEngine_MultiFormat_Ingest(t *testing.T) {
 	}
 	if qResp.Logs[0].Service != "payment-svc" {
 		t.Errorf("expected service 'payment-svc', got %q", qResp.Logs[0].Service)
+	}
+}
+
+func TestEngine_PersistenceReplay_NoDeadlockOrDuplication(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Run 1: Open DiskStore + Engine, ingest 10 lines, close
+	ds1, err := storage.Open(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to open disk store 1: %v", err)
+	}
+	eng1 := NewEngine(EngineConfig{Store: ds1})
+	for i := 0; i < 10; i++ {
+		_ = eng1.Ingest([]byte(fmt.Sprintf("173000000%d|auth-api|INFO|tr-%d|Persistent line %d\n", i, i, i)))
+	}
+	for eng1.IndexedCount() < 10 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	eng1.Close()
+	_ = ds1.Close()
+
+	// Run 2: Reopen DiskStore + Engine, replay via IngestReplay (must not deadlock or duplicate on disk)
+	ds2, err := storage.Open(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to open disk store 2: %v", err)
+	}
+	eng2 := NewEngine(EngineConfig{Store: ds2})
+	if err := ds2.Replay(func(raw []byte) {
+		_ = eng2.IngestReplay(raw)
+	}); err != nil {
+		t.Fatalf("replay failed: %v", err)
+	}
+	for eng2.IndexedCount() < 10 {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Verify trace query parameter
+	reqTrace := httptest.NewRequest("GET", "/query?trace=tr-5", nil)
+	wTrace := httptest.NewRecorder()
+	eng2.HandleQuery(wTrace, reqTrace)
+	if wTrace.Code != http.StatusOK {
+		t.Fatalf("expected 200 on trace query, got %d", wTrace.Code)
+	}
+	var qResp QueryResponse
+	_ = json.Unmarshal(wTrace.Body.Bytes(), &qResp)
+	if len(qResp.Logs) != 1 || qResp.Logs[0].TraceID != "tr-5" {
+		t.Fatalf("expected 1 log with trace_id 'tr-5', got %+v", qResp.Logs)
+	}
+
+	// Verify POST /logs is rejected (CSRF protection: only DELETE allowed)
+	reqPostBurn := httptest.NewRequest("POST", "/logs", nil)
+	wPostBurn := httptest.NewRecorder()
+	eng2.HandleBurn(wPostBurn, reqPostBurn)
+	if wPostBurn.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected 405 Method Not Allowed for POST /logs, got %d", wPostBurn.Code)
+	}
+
+	eng2.Close()
+	_ = ds2.Close()
+
+	// Run 3: Reopen DiskStore again and verify total replayed entries is still 10 (not 20)
+	ds3, err := storage.Open(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to open disk store 3: %v", err)
+	}
+	defer ds3.Close()
+	var count int
+	_ = ds3.Replay(func(raw []byte) {
+		count++
+	})
+	if count != 10 {
+		t.Fatalf("expected exactly 10 entries on disk after restart replay, got %d (duplication bug!)", count)
 	}
 }

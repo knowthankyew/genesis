@@ -238,10 +238,13 @@ func (e *Engine) HandleTail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clear server-level WriteTimeout so long-lived SSE streams are not terminated after 10s
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	query := r.URL.Query()
 	level := query.Get("level")
@@ -254,11 +257,17 @@ func (e *Engine) HandleTail(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, ": connected\n\n")
 	flusher.Flush()
 
+	keepalive := time.NewTicker(15 * time.Second)
+	defer keepalive.Stop()
+
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-keepalive.C:
+			fmt.Fprintf(w, ": keepalive\n\n")
+			flusher.Flush()
 		case entry, ok := <-sub.ch:
 			if !ok {
 				return
@@ -284,9 +293,10 @@ func (e *Engine) Burn() (int, time.Time) {
 	return purged, t
 }
 
-// HandleBurn processes DELETE /logs (or POST /burn) to purge the index.
+// HandleBurn processes DELETE /logs to purge the index.
+// Strictly requires HTTP DELETE to prevent cross-origin form POST CSRF.
 func (e *Engine) HandleBurn(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
+	if r.Method != http.MethodDelete {
 		http.Error(w, `{"error":"method not allowed; use DELETE"}`, http.StatusMethodNotAllowed)
 		return
 	}
@@ -299,6 +309,17 @@ func (e *Engine) HandleBurn(w http.ResponseWriter, r *http.Request) {
 		"timestamp": t.Format(time.RFC3339),
 		"message":   fmt.Sprintf("burned %d entries at %s", purged, t.Format(time.RFC3339)),
 	})
+}
+
+// IngestReplay restores a previously persisted raw log entry into memory on startup
+// without re-appending to DiskStore or re-running redaction.
+func (e *Engine) IngestReplay(raw []byte) error {
+	if e.closing.Load() {
+		return ErrStopped
+	}
+	e.receivedCount.Add(1)
+	e.processRawLog(raw)
+	return nil
 }
 
 // Ingest routes logs into priority or normal lanes.
@@ -364,6 +385,10 @@ func (e *Engine) HandleQuery(w http.ResponseWriter, r *http.Request) {
 	endStr := query.Get("end")
 	level := query.Get("level")
 	service := query.Get("service")
+	trace := query.Get("trace")
+	if trace == "" {
+		trace = query.Get("trace_id")
+	}
 	grep := query.Get("grep")
 	if grep == "" {
 		grep = query.Get("q")
@@ -414,7 +439,7 @@ func (e *Engine) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		order = "asc"
 	}
 
-	entries := e.index.Query(start, end, level, service, grep, limit, order)
+	entries := e.index.QueryWithTrace(start, end, level, service, trace, grep, limit, order)
 	latency := time.Since(startTs).Microseconds()
 
 	resp := QueryResponse{

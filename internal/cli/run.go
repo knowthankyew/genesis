@@ -85,8 +85,12 @@ func RunProcess(args []string) error {
 			// 2. Send to Genesis
 			if conn != nil {
 				now := time.Now().Unix()
+				lvl := defaultLvl
+				if defaultLvl == "INFO" {
+					lvl = inferLineLevel(string(line), "INFO")
+				}
 				// Send as Pipe format: <timestamp>|<service>|<level>|<trace_id>|<message>
-				entryLine := fmt.Sprintf("%d|%s|%s||%s\n", now, *service, defaultLvl, string(line))
+				entryLine := fmt.Sprintf("%d|%s|%s||%s\n", now, *service, lvl, string(line))
 				connMu.Lock()
 				_, _ = conn.Write([]byte(entryLine))
 				connMu.Unlock()

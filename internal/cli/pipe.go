@@ -2,12 +2,30 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
+
+func inferLineLevel(line string, fallback string) string {
+	upper := strings.ToUpper(line)
+	switch {
+	case strings.Contains(upper, "FATAL") || strings.Contains(upper, "PANIC") || strings.Contains(upper, "CRIT"):
+		return "FATAL"
+	case strings.Contains(upper, "ERROR") || strings.Contains(upper, "EXCEPTION"):
+		return "ERROR"
+	case strings.Contains(upper, "WARN"):
+		return "WARN"
+	case strings.Contains(upper, "DEBUG") || strings.Contains(upper, "TRACE"):
+		return "DEBUG"
+	default:
+		return fallback
+	}
+}
 
 // RunPipe reads from standard input and streams lines into Genesis ingestion
 func RunPipe(args []string) error {
@@ -31,13 +49,14 @@ func RunPipe(args []string) error {
 			continue
 		}
 
-		// If line already looks formatted (starts with digit followed by pipe, or starts with '<' or '{'), send as is
-		// Otherwise wrap with standard pipe format
+		// If line already looks formatted (JSON, Syslog, or 5-field pipe), send as is
+		// Otherwise wrap with standard pipe format and inferred level
 		var toSend []byte
-		if line[0] == '{' || line[0] == '<' {
+		if line[0] == '{' || line[0] == '<' || (line[0] >= '0' && line[0] <= '9' && bytes.Count(line, []byte("|")) >= 4) {
 			toSend = append(line, '\n')
 		} else {
-			toSend = []byte(fmt.Sprintf("%d|%s|INFO||%s\n", time.Now().Unix(), *service, string(line)))
+			lvl := inferLineLevel(string(line), "INFO")
+			toSend = []byte(fmt.Sprintf("%d|%s|%s||%s\n", time.Now().Unix(), *service, lvl, string(line)))
 		}
 
 		if _, err := conn.Write(toSend); err != nil {

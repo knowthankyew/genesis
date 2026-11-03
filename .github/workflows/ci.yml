@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Build, Audit Claims, Race Test & Attest (Go Stdlib)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go 1.22
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Generate CycloneDX 1.5 SBOM (bom.json)
+        run: python3 ./scripts/generate-sbom.py bom.json
+
+      - name: Verify Zero-Dependency, Zero-Egress & Empirical Claims Gate
+        run: python3 ./scripts/audit-claims.py
+
+      - name: Run Go Vet Static Analysis
+        run: go vet ./...
+
+      - name: Run Unit, Oracle Property & Race Detector Tests
+        run: go test -race ./...
+
+      - name: Build Genesis & Benchmark Binaries
+        run: |
+          make build
+          shasum -a 256 bin/genesis bin/genesis-bench bom.json > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest Build Provenance (SLSA)
+        uses: actions/attest-build-provenance@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          subject-path: |
+            bom.json
+            bin/genesis
+
+      - name: Upload CycloneDX SBOM & Binary Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: genesis-release-sbom
+          path: |
+            bom.json
+            SHA256SUMS
+            bin/genesis

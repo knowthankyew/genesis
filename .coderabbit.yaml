@@ -1,0 +1,44 @@
+# CodeRabbit Configuration for genesis
+# Targeted Scope: High-Performance In-Memory Go Log Engine, SkipList Index, Empirical Benchmarks & Privacy Invariants
+
+language: "en-US"
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  sequence_diagrams: true
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_filters:
+    - "!bom.json"
+    - "!docs/origin/**"
+
+  path_instructions:
+    - path: "**/*"
+      instructions: |
+        You are performing a systems engineering, concurrency safety, security, and claims parity audit for "genesis" (knowthankyew/genesis), a high-performance in-memory log and telemetry engine written in pure Go standard library.
+
+        Evaluate all code and documentation against these non-negotiable invariants:
+        1. CLAIMS ARE MEASURED, NOT ASSERTED:
+           - Every throughput, latency, or memory number in `README.md` or `docs/` must trace back to a committed benchmark report in `docs/benchmarks/` produced by `cmd/genesis-bench`.
+           - Prohibit unverified marketing superlatives ('bulletproof', 'rock solid', 'conclusive', 'definitive', 'infinitely scalable').
+        2. ZERO EXTERNAL DEPENDENCIES:
+           - `go.mod` must remain 100% Go standard library (zero `require` directives).
+        3. CONCURRENCY & MEMORY SAFETY:
+           - Verify lock ordering and race freedom across `internal/index/`, `internal/skiplist/`, `internal/engine/`, and `internal/storage/`.
+           - Ensure memory accounting never drifts under concurrent partition eviction and insertion.
+        4. SECURITY & ZERO WEB UI EGRESS:
+           - Default listeners must bind to `127.0.0.1` unless `--allow-all-interfaces` is passed.
+           - `internal/ui/assets/index.html` must make zero external network requests (no CDN scripts, fonts, or `http://`/`https://` URLs).
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: "auto"
+  linked_repositories:
+    - repository: "knowthankyew/portfolio-admin"
+      instructions: "Contains canonical portfolio integration standards and Master Brief assertions (KNOWTHANKYEW_PORTFOLIO_MASTER_BRIEF.md)."

@@ -1,5 +1,8 @@
 # Genesis: High-Throughput In-Memory Log Engine
 
+> [!WARNING]
+> ⚠️ **Under audit.** Performance claims below are unverified; see [docs/origin/03-review.md](docs/origin/03-review.md).
+
 [![Go Report Card](https://goreportcard.com/badge/github.com/knowthankyew/project-genesis)](https://goreportcard.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 

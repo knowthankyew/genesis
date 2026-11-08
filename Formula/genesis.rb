@@ -1,8 +1,9 @@
 class Genesis < Formula
   desc "High-performance in-memory telemetry engine with zero external network egress"
   homepage "https://github.com/knowthankyew/genesis"
-  url "https://github.com/knowthankyew/genesis/archive/refs/tags/v0.3.0.tar.gz"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000" # Replace with release SHA
+  url "https://github.com/knowthankyew/genesis.git",
+      tag:      "v0.4.0",
+      revision: "d0537b66039afe35d3518c6d8981c163762a01a1"
   license "MIT"
   head "https://github.com/knowthankyew/genesis.git", branch: "main"
 

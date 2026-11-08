@@ -33,6 +33,7 @@ type SkipList struct {
 }
 
 func NewSkipList() *SkipList {
+	// Golden-ratio Weyl increment (floor(2^64 / phi)) seeds per-shard xorshift* state lock-free.
 	seed := rngSeedCounter.Add(0x9e3779b97f4a7c15)
 	if seed == 0 {
 		seed = 0xfeedfacecafebabe

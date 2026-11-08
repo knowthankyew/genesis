@@ -300,6 +300,8 @@ func handleTCPConnection(conn net.Conn, eng *engine.Engine, maxLineLen int) {
 	var acc []byte
 	truncated := false
 	backpressureDrops := 0
+	// Golden-ratio Weyl step (floor(2^64 / phi)): maximally irrational increment disperses
+	// per-connection seeds without locks, syscalls, or same-tick clock collisions.
 	jitter := tcpJitterSeed.Add(0x9e3779b97f4a7c15) | 1
 	ingestLine := func(b []byte) {
 		if ingestErr := eng.Ingest(b); errors.Is(ingestErr, engine.ErrBackpressure) {
@@ -309,7 +311,7 @@ func handleTCPConnection(conn net.Conn, eng *engine.Engine, maxLineLen int) {
 				jitter ^= jitter << 13
 				jitter ^= jitter >> 7
 				jitter ^= jitter << 17
-				// Jittered 800µs..1823µs backoff paces saturated senders without lockstep wakeups
+				// Jittered 800µs..1823µs xorshift64 backoff paces saturated senders without lockstep wakeups
 				time.Sleep(time.Duration(800+(jitter&1023)) * time.Microsecond)
 			}
 		}

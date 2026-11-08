@@ -1,12 +1,12 @@
 {
   "metadata": {
-    "date": "2026-11-02T21:49:39-06:00",
-    "git_commit": "e0c20fa",
+    "date": "2026-11-08T06:34:25-06:00",
+    "git_commit": "091f06c",
     "os": "Darwin 25.6.0 x86_64",
     "cpu": "Intel(R) Core(TM) i9-9880H CPU @ 2.30GHz (16 logical cores)",
     "memory_bytes": 17179869184,
     "go_version": "go1.27.1 darwin/amd64",
-    "report_markdown": "docs/benchmarks/2026-11-02-e0c20fa.md"
+    "report_markdown": "docs/benchmarks/2026-11-08-091f06c.md"
   },
   "acceptance_gates": {
     "throughput_target_lps": 50000,
@@ -18,35 +18,35 @@
     "oracle_randomized_queries_target": 1000
   },
   "ingestion_pipeline": {
-    "duration_seconds": 60.20032,
+    "duration_seconds": 60.2681285,
     "concurrent_tcp_clients": 50,
-    "lines_sent": 66959207,
-    "lines_indexed": 16687085,
-    "throughput_lps": 277192.64,
+    "lines_sent": 67629803,
+    "lines_indexed": 63059894,
+    "throughput_lps": 1046322.42,
     "throughput_gate_status": "PASSED",
-    "dropped_total": 49976055,
-    "dropped_queue_full": 49976055,
+    "dropped_total": 4374578,
+    "dropped_queue_full": 4374578,
     "dropped_malformed": 0,
     "dropped_stopped": 0,
     "active_partitions": 2,
-    "evicted_entries": 16133939
+    "evicted_entries": 62705873
   },
   "query_latencies": {
-    "total_queries": 2747,
-    "p50_us": 373.332,
+    "total_queries": 2996,
+    "p50_us": 416.456,
     "p50_gate_status": "SUB-MILLISECOND",
-    "p90_ms": 17.040394,
+    "p90_ms": 0.712261,
     "p90_gate_status": "SUB-TWENTY-MS",
-    "p99_ms": 55.353954,
-    "p99_gate_status": "MISSED TARGET",
-    "max_ms": 127.216627
+    "p99_ms": 4.29479,
+    "p99_gate_status": "PASSED",
+    "max_ms": 50.97204
   },
   "memory_profile": {
-    "accounted_mb": 229.26,
-    "heap_alloc_plateau_mb": 293.70,
-    "heap_alloc_peak_mb": 426.01,
+    "accounted_mb": 146.73,
+    "heap_alloc_plateau_mb": 234.65,
+    "heap_alloc_peak_mb": 371.49,
     "heap_gate_status": "PASSED",
-    "rss_10k_connections_kb": 573500,
+    "rss_10k_connections_kb": 452012,
     "idle_connections_held": 10000,
     "idle_connections_gate_status": "PASSED"
   },

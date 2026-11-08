@@ -118,7 +118,7 @@
       "json_path": "query_latencies.p99_ms",
       "format_rule": "{value:.2f} ms",
       "used_in": ["README.md"],
-      "description": "End-to-end HTTP + JSON query P99 latency under full ingestion load (saturation disclosure)"
+      "description": "End-to-end HTTP + JSON query P99 latency under full ingestion load"
     },
     "bench_p99_status": {
       "source_artifact": "docs/benchmarks/empirical_benchmarks.json",
@@ -294,6 +294,48 @@
       "format_rule": "{value}-second",
       "used_in": ["docs/ARCHITECTURE.md"],
       "description": "Server time partition bucket duration in seconds"
+    },
+    "partition_shard_count": {
+      "source_artifact": "internal/index/index.go",
+      "go_const": "NumPartitionShards",
+      "format_rule": "{value}",
+      "used_in": ["docs/ARCHITECTURE.md"],
+      "description": "Number of independent concurrency shards per time partition"
+    },
+    "max_chunk_entries": {
+      "source_artifact": "internal/index/index.go",
+      "go_const": "MaxChunkEntries",
+      "format_rule": "{value:,}",
+      "used_in": ["docs/ARCHITECTURE.md"],
+      "description": "Maximum log entries in an active shard chunk before sealing"
+    },
+    "gc_watermark_threshold_mb": {
+      "source_artifact": "internal/index/index.go",
+      "go_const": "GCWatermarkThresholdBytes",
+      "format_rule": "bytes_to_mb",
+      "used_in": ["docs/ARCHITECTURE.md"],
+      "description": "Memory budget threshold in megabytes above which GC headroom eviction watermarks apply"
+    },
+    "eviction_trigger_pct": {
+      "source_artifact": "internal/index/index.go",
+      "go_const": "EvictionTriggerPercent",
+      "format_rule": "{value}%",
+      "used_in": ["docs/ARCHITECTURE.md"],
+      "description": "Percentage of MaxMemoryBytes that triggers eviction for standard memory budgets"
+    },
+    "eviction_target_pct": {
+      "source_artifact": "internal/index/index.go",
+      "go_const": "EvictionTargetPercent",
+      "format_rule": "{value}%",
+      "used_in": ["docs/ARCHITECTURE.md"],
+      "description": "Target percentage of MaxMemoryBytes after eviction for standard memory budgets"
+    },
+    "small_budget_eviction_target_pct": {
+      "source_artifact": "internal/index/index.go",
+      "go_const": "SmallBudgetEvictionTargetPercent",
+      "format_rule": "{value}%",
+      "used_in": ["docs/ARCHITECTURE.md"],
+      "description": "Target percentage of MaxMemoryBytes after eviction for sub-threshold memory budgets"
     }
   }
 }

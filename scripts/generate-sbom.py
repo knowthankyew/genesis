@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 
 
-def generate_sbom(output_path: str = "bom.json", arch: str | None = None, version: str = "0.3.1") -> None:
+def generate_sbom(output_path: str = "bom.json", arch: str | None = None, version: str = "0.4.0") -> None:
     if not arch:
         machine = platform.machine().lower()
         arch = "arm64" if machine in ("arm64", "aarch64") else "amd64"
@@ -114,5 +114,5 @@ def generate_sbom(output_path: str = "bom.json", arch: str | None = None, versio
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else "bom.json"
     arch_arg = sys.argv[2] if len(sys.argv) > 2 else None
-    ver_arg = sys.argv[3] if len(sys.argv) > 3 else "0.3.1"
+    ver_arg = sys.argv[3] if len(sys.argv) > 3 else "0.4.0"
     generate_sbom(out, arch_arg, ver_arg)

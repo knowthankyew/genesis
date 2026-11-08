@@ -52,6 +52,25 @@ class TestClaimsLinter(unittest.TestCase):
         )
         self.assertEqual(mem_limit_mb, 480)
 
+        shard_count = sync_docs.extract_go_constant(
+            REPO_ROOT / "internal" / "index" / "index.go", "NumPartitionShards"
+        )
+        self.assertEqual(shard_count, 8)
+
+        chunk_entries = sync_docs.extract_go_constant(
+            REPO_ROOT / "internal" / "index" / "index.go", "MaxChunkEntries"
+        )
+        self.assertEqual(chunk_entries, 4096)
+
+        evict_trigger = sync_docs.extract_go_constant(
+            REPO_ROOT / "internal" / "index" / "index.go", "EvictionTriggerPercent"
+        )
+        evict_target = sync_docs.extract_go_constant(
+            REPO_ROOT / "internal" / "index" / "index.go", "EvictionTargetPercent"
+        )
+        self.assertGreater(evict_trigger, 50)
+        self.assertLess(evict_target, evict_trigger)
+
     def test_empirical_benchmarks_json_and_recomputation(self):
         """Verify empirical_benchmarks.json math, latency ordering, and zero /Users/ paths."""
         bench_path = DOCS_DIR / "benchmarks" / "empirical_benchmarks.json"

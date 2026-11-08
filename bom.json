@@ -2,10 +2,10 @@
   "$schema": "http://cyclonedx.org/schema/bom-1.5.schema.json",
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
-  "serialNumber": "urn:uuid:05c24578-4b3f-5202-b36d-f64223b85793",
+  "serialNumber": "urn:uuid:a4986cb7-7a9d-5d89-a81f-1db443abc9fc",
   "version": 1,
   "metadata": {
-    "timestamp": "2024-11-03T00:00:00Z",
+    "timestamp": "2026-11-08T12:35:23Z",
     "tools": {
       "components": [
         {
@@ -18,9 +18,9 @@
     },
     "component": {
       "type": "application",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis@0.3.1?arch=amd64",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis@0.4.0?arch=amd64",
       "name": "genesis",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "description": "High-performance, zero-dependency in-memory log and telemetry engine in pure Go stdlib with O(1) partition eviction, dual-channel QoS priority routing, and instant amnesiac burn.",
       "licenses": [
         {
@@ -56,9 +56,9 @@
   "components": [
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/cli@0.3.1",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/cli@0.4.0",
       "name": "internal/cli",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "scope": "required",
       "description": "Unified CLI subcommands (server, run, pipe, query, tail, stats, burn)",
       "licenses": [
@@ -71,9 +71,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/config@0.3.1",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/config@0.4.0",
       "name": "internal/config",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "scope": "required",
       "description": "JSON, environment variable (GENESIS_*), and CLI flag configuration loader",
       "licenses": [
@@ -86,9 +86,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/engine@0.3.1",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/engine@0.4.0",
       "name": "internal/engine",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "scope": "required",
       "description": "Dual-channel QoS priority ingestion engine, SSE live tail broadcaster, and HTTP handlers",
       "licenses": [
@@ -101,9 +101,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/index@0.3.1",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/index@0.4.0",
       "name": "internal/index",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "scope": "required",
       "description": "Time-partitioned concurrent store index and doubly-linked SkipList with O(1) partition eviction",
       "licenses": [
@@ -116,9 +116,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/parser@0.3.1",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/parser@0.4.0",
       "name": "internal/parser",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "scope": "required",
       "description": "Zero-allocation pipe parser and multi-format auto-detector (Syslog RFC 5424/3164, JSON Lines, Plain Text)",
       "licenses": [
@@ -131,9 +131,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/redact@0.3.1",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/redact@0.4.0",
       "name": "internal/redact",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "scope": "required",
       "description": "Ingest-time PII and credential redactor (Bearer, AWS keys, JWT, email, credit card, custom regex)",
       "licenses": [
@@ -146,9 +146,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/security@0.3.1",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/security@0.4.0",
       "name": "internal/security",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "scope": "required",
       "description": "Constant-time Bearer token HTTP authentication middleware",
       "licenses": [
@@ -161,9 +161,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/storage@0.3.1",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/storage@0.4.0",
       "name": "internal/storage",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "scope": "required",
       "description": "Optional crash-safe append-only CRC32 segment persistence with age and size pruning",
       "licenses": [
@@ -176,9 +176,9 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/ui@0.3.1",
+      "bom-ref": "pkg:golang/github.com/knowthankyew/genesis/internal/ui@0.4.0",
       "name": "internal/ui",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "scope": "required",
       "description": "Embedded single-file zero-CDN Web UI served via Go embed.FS",
       "licenses": [
@@ -192,17 +192,17 @@
   ],
   "dependencies": [
     {
-      "ref": "pkg:golang/github.com/knowthankyew/genesis@0.3.1?arch=amd64",
+      "ref": "pkg:golang/github.com/knowthankyew/genesis@0.4.0?arch=amd64",
       "dependsOn": [
-        "pkg:golang/github.com/knowthankyew/genesis/internal/cli@0.3.1",
-        "pkg:golang/github.com/knowthankyew/genesis/internal/config@0.3.1",
-        "pkg:golang/github.com/knowthankyew/genesis/internal/engine@0.3.1",
-        "pkg:golang/github.com/knowthankyew/genesis/internal/index@0.3.1",
-        "pkg:golang/github.com/knowthankyew/genesis/internal/parser@0.3.1",
-        "pkg:golang/github.com/knowthankyew/genesis/internal/redact@0.3.1",
-        "pkg:golang/github.com/knowthankyew/genesis/internal/security@0.3.1",
-        "pkg:golang/github.com/knowthankyew/genesis/internal/storage@0.3.1",
-        "pkg:golang/github.com/knowthankyew/genesis/internal/ui@0.3.1"
+        "pkg:golang/github.com/knowthankyew/genesis/internal/cli@0.4.0",
+        "pkg:golang/github.com/knowthankyew/genesis/internal/config@0.4.0",
+        "pkg:golang/github.com/knowthankyew/genesis/internal/engine@0.4.0",
+        "pkg:golang/github.com/knowthankyew/genesis/internal/index@0.4.0",
+        "pkg:golang/github.com/knowthankyew/genesis/internal/parser@0.4.0",
+        "pkg:golang/github.com/knowthankyew/genesis/internal/redact@0.4.0",
+        "pkg:golang/github.com/knowthankyew/genesis/internal/security@0.4.0",
+        "pkg:golang/github.com/knowthankyew/genesis/internal/storage@0.4.0",
+        "pkg:golang/github.com/knowthankyew/genesis/internal/ui@0.4.0"
       ]
     }
   ]

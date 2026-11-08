@@ -1,6 +1,6 @@
 <!-- diagram-meta
-last-validated: 2026-11-03
-validated-commit: 414ca3e
+last-validated: 2026-11-08
+validated-commit: 091f06c
 covers: [cmd/, internal/]
 -->
 
@@ -60,11 +60,11 @@ flowchart TD
 
 1. **Dual-Channel QoS Priority Routing (`internal/engine/engine.go`):**
    - Incoming lines are inspected for `ERROR` or `FATAL` severity and routed to `priorityCh` ahead of `normalCh` (falling back non-blockingly to `normalCh` if `priorityCh` is full).
-   - Worker goroutines drain `priorityCh` before pulling from `normalCh`. Under the <!-- claim:bench_concurrent_clients -->50<!-- /claim -->-client TCP saturation benchmark (<!-- claim:bench_lines_sent -->66,959,207<!-- /claim --> lines sent), the engine indexed <!-- claim:bench_lines_indexed -->16,687,085<!-- /claim --> lines (**<!-- claim:bench_throughput_lps -->277,192.64 lines/sec<!-- /claim -->**) while shedding <!-- claim:bench_lines_dropped -->49,976,055<!-- /claim --> excess normal-lane lines via `queue_full` backpressure.
-2. **Time-Partitioned Doubly-Linked SkipList (`internal/index/index.go`, `internal/index/skiplist.go`):**
-   - Logs are bucketed into <!-- claim:server_bucket_duration_sec -->5-second<!-- /claim --> partitions with per-partition inverted maps (`byLevel`, `byService`) and a doubly-linked concurrent SkipList (`RangeScanAsc` / `RangeScanDesc` in $O(\log N + K)$ time, capped at <!-- claim:max_query_limit -->10,000<!-- /claim --> results per query).
+   - Worker goroutines drain `priorityCh` before pulling from `normalCh`. Under the <!-- claim:bench_concurrent_clients -->50<!-- /claim -->-client TCP saturation benchmark (<!-- claim:bench_lines_sent -->67,629,803<!-- /claim --> lines sent), the engine indexed <!-- claim:bench_lines_indexed -->63,059,894<!-- /claim --> lines (**<!-- claim:bench_throughput_lps -->1,046,322.42 lines/sec<!-- /claim -->**) while shedding <!-- claim:bench_lines_dropped -->4,374,578<!-- /claim --> excess normal-lane lines via `queue_full` backpressure.
+2. **Time-Partitioned Sharded Index & Zero-Pointer SkipList Arena (`internal/index/index.go`, `internal/index/skiplist.go`):**
+   - Logs are bucketed into <!-- claim:server_bucket_duration_sec -->5-second<!-- /claim --> partitions, each split across <!-- claim:partition_shard_count -->8<!-- /claim --> independent shards that seal bounded <!-- claim:max_chunk_entries -->4,096<!-- /claim -->-entry immutable micro-segments (`partChunk`) backed by flat `[]parser.LogEntry` slices, sorted inverted posting slices (`byLevel`, `byService`, `bySvcLevel`), and a zero-pointer (`noscan`) arena-backed doubly-linked SkipList (`ScanRangeAscIdx` / `ScanRangeDescIdx` in $O(\log N + K)$ time, capped at <!-- claim:max_query_limit -->10,000<!-- /claim --> results per query).
    - Each indexed entry accounts for <!-- claim:entry_base_overhead_bytes -->360 bytes<!-- /claim --> of base struct/index overhead plus payload length; the server sets a <!-- claim:go_runtime_memory_limit_mb -->480 MB<!-- /claim --> Go runtime GC ceiling (`DefaultMaxMemoryBytes` fallback: <!-- claim:default_max_memory_mb -->512 MB<!-- /claim -->).
-   - When accounted bytes reach `--max-mem-mb`, `evictOldestPartitions` selects the lowest-ID bucket (when multiple buckets exist) in $O(P)$ over active buckets and drops the bucket in $O(1)$ relative to record count $N$ without per-node GC scanning.
+   - For memory budgets $\ge$ <!-- claim:gc_watermark_threshold_mb -->64 MB<!-- /claim -->, eviction triggers at <!-- claim:eviction_trigger_pct -->52%<!-- /claim --> of `MaxMemoryBytes` and evicts down to <!-- claim:eviction_target_pct -->45%<!-- /claim --> to reserve GC sweep headroom; smaller budgets trigger at `MaxMemoryBytes` and evict down to <!-- claim:small_budget_eviction_target_pct -->85%<!-- /claim -->. `evictOldestPartitions` drops the oldest time bucket in $O(P)$ over active buckets (or pointer-drops the oldest sealed micro-segments in the active bucket; for tiny single-bucket budgets before any chunk seals, it falls back under `sh.mu` to `EvictOldestIdx` tombstoning and `compactActivePostings`).
 3. **Amnesiac Purge (`Burn`):**
    - `DELETE /logs` (`HandleBurn`) atomically replaces the partition map, resets byte counters, unlinks all `.seg` files if `--data-dir` is active, and records a single audit log line.
 4. **Zero External Egress & Localhost-by-Default:**
@@ -86,7 +86,7 @@ sequenceDiagram
     Client->>Engine: Ingest(rawLine)
     Engine->>Disk: Append(redactedLine) [if accepted & --data-dir active]
     Engine->>Index: Insert(entry) [PriorityCh drained before NormalCh]
-    Index->>Index: Select lowest-ID bucket in O(P) & drop in O(1) wrt N if CurrentBytes > MaxMemoryBytes
+    Index->>Index: Evict oldest bucket or sealed chunks when CurrentBytes >= EvictionTrigger
     User->>Engine: DELETE /logs (Amnesiac Burn)
     Engine->>Index: Burn() [Atomically clear partitions & reset byte counters]
     Engine->>Disk: Burn() [Unlink all .seg files]

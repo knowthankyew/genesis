@@ -13,7 +13,7 @@ Enforces:
    'proves', 'zero hallucination', '100%') are allowed only when tied to a registered claim
    with verified file/test evidence.
 4. Independent mathematical verification of docs/benchmarks/empirical_benchmarks.json against
-   docs/benchmarks/2026-11-02-e0c20fa.md (throughput recomputation, latency ordering,
+   the referenced docs/benchmarks/<date>-<sha>.md report (throughput recomputation, latency ordering,
    status threshold derivation, dropped sum, heap bounds, RSS check, and zero /Users/ paths).
 5. Safe extraction and rendering of Go source constants (MaxSegmentBytes, DefaultMaxLineLength,
    MaxServicePoolSize, DefaultMaxMemoryBytes, MaxQueryLimit, GoRuntimeMemoryLimitMB).
@@ -280,11 +280,19 @@ def independent_recompute_metrics(benchmark_json_path: Path, repo_root: Path = R
         md_text = report_path.read_text(encoding="utf-8")
         if "/Users/" in md_text:
             errors.append(f"Markdown benchmark report {report_rel} contains leaked '/Users/' path")
+        def _go_dur_us(us: float) -> str:
+            return f"{us:.3f}".rstrip("0").rstrip(".") + "µs"
+
+        def _go_dur_ms(ms: float) -> str:
+            if ms < 1.0:
+                return _go_dur_us(ms * 1000.0)
+            return f"{ms:.6f}".rstrip("0").rstrip(".") + "ms"
+
         expected_tokens = [
             f"{stored_tps:.2f} lines/sec",
-            f"{p50_us:.3f}µs",
-            f"{p90_ms:.6f}ms",
-            f"{p99_ms:.6f}ms",
+            _go_dur_us(p50_us),
+            _go_dur_ms(p90_ms),
+            _go_dur_ms(p99_ms),
             f"{plateau_mb:.2f} MB",
             f"{peak_mb:.2f} MB",
             f"{conns_held} held",

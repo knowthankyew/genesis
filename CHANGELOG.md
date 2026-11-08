@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] - 2026-11-08
+
+### Changed
+- **Sharded Micro-Segment Index (`internal/index`):** Split time partitions into 8 shards that seal 4,096-entry immutable micro-segments backed by flat `[]parser.LogEntry` slices, sorted inverted posting lists (`byService`, `byLevel`, `bySvcLevel`), shard-first deduplicated sealing scans, and reusable bounded binary-heap top-K collection, bringing 60-second live-socket end-to-end read query P99 latency (including full HTTP response body drain) down from `55.35 ms` to `4.29 ms` (`< 5.0 ms` target passed) at `1,046,322.42 lines/sec` TCP ingestion.
+- **Zero-Pointer (`noscan`) SkipList Arena (`internal/index`):** Replaced heap-allocated pointer skip-list nodes with an index-addressed `[]skipNode` slice containing zero pointers, eliminating per-node GC mark scanning and write barriers across evicted segments.
+- **Pooled Ingestion & Query Buffers (`internal/engine`, `internal/parser`):** Added `sync.Pool` buffer reuse for raw ingestion lines and HTTP query JSON serialization, zero-allocation service interning, and single-backing-string slicing for `TraceID` and `Message`.
+- **Jittered Cooperative TCP Backpressure (`internal/cli`):** Added per-connection golden-ratio seeded microsecond backoff on repeated `ErrBackpressure` drops so saturated TCP clients engage kernel flow control smoothly without timer herds.
+
+---
+
 ## [0.3.0] - 2026-11-02
 
 ### Added

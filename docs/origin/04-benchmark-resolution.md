@@ -37,7 +37,7 @@ To conquer the last remaining challenge gate without compromising any invariant 
 3. **Buffer Reuse & Cooperative Backpressure (`internal/engine`, `internal/parser`, `internal/cli`):**
    - Implemented `sync.Pool` reuse for raw ingestion byte slices and HTTP query JSON serializers.
    - Single-backing-string slicing for parsed fields (`TraceID`, `Message`).
-   - Per-connection golden-ratio jittered microsecond backoff on TCP queue saturation, engaging kernel flow control cleanly.
+   - Per-connection golden-ratio Weyl-seeded (`0x9e3779b97f4a7c15` = $\lfloor 2^{64}/\varphi \rfloor$) xorshift backoff (`800–1,823 µs`) on TCP queue saturation, desynchronizing concurrent senders so kernel flow control engages without wakeup herds.
 
 ---
 

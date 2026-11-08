@@ -1,6 +1,6 @@
 <!-- diagram-meta
 last-validated: 2026-11-08
-validated-commit: 091f06c
+validated-commit: 3893622
 covers: [cmd/, internal/]
 -->
 
@@ -58,11 +58,12 @@ flowchart TD
 
 ## 2. Core Subsystem Invariants
 
-1. **Dual-Channel QoS Priority Routing (`internal/engine/engine.go`):**
+1. **Dual-Channel QoS Priority Routing & Golden-Ratio Cooperative Backpressure (`internal/engine/engine.go`, `internal/cli/server.go`):**
    - Incoming lines are inspected for `ERROR` or `FATAL` severity and routed to `priorityCh` ahead of `normalCh` (falling back non-blockingly to `normalCh` if `priorityCh` is full).
    - Worker goroutines drain `priorityCh` before pulling from `normalCh`. Under the <!-- claim:bench_concurrent_clients -->50<!-- /claim -->-client TCP saturation benchmark (<!-- claim:bench_lines_sent -->67,629,803<!-- /claim --> lines sent), the engine indexed <!-- claim:bench_lines_indexed -->63,059,894<!-- /claim --> lines (**<!-- claim:bench_throughput_lps -->1,046,322.42 lines/sec<!-- /claim -->**) while shedding <!-- claim:bench_lines_dropped -->4,374,578<!-- /claim --> excess normal-lane lines via `queue_full` backpressure.
+   - **Golden-Ratio Jittered TCP Backpressure:** Each accepted TCP connection seeds a local 64-bit xorshift state via an atomic golden-ratio Weyl increment (`0x9e3779b97f4a7c15` = $\lfloor 2^{64}/\varphi \rfloor$, chosen because $\varphi$ is the most irrational real number—hardest to approximate rationally—preventing periodic seed clustering across simultaneously accepted sockets without locks or `crypto/rand` syscalls). On every second `ErrBackpressure` drop, the reader advances its xorshift state and sleeps `800–1,823 µs`, desynchronizing concurrent backoff timers so TCP kernel flow control engages smoothly without wakeup herds.
 2. **Time-Partitioned Sharded Index & Zero-Pointer SkipList Arena (`internal/index/index.go`, `internal/index/skiplist.go`):**
-   - Logs are bucketed into <!-- claim:server_bucket_duration_sec -->5-second<!-- /claim --> partitions, each split across <!-- claim:partition_shard_count -->8<!-- /claim --> independent shards that seal bounded <!-- claim:max_chunk_entries -->4,096<!-- /claim -->-entry immutable micro-segments (`partChunk`) backed by flat `[]parser.LogEntry` slices, sorted inverted posting slices (`byLevel`, `byService`, `bySvcLevel`), and a zero-pointer (`noscan`) arena-backed doubly-linked SkipList (`ScanRangeAscIdx` / `ScanRangeDescIdx` in $O(\log N + K)$ time, capped at <!-- claim:max_query_limit -->10,000<!-- /claim --> results per query).
+   - Logs are bucketed into <!-- claim:server_bucket_duration_sec -->5-second<!-- /claim --> partitions, each split across <!-- claim:partition_shard_count -->8<!-- /claim --> independent shards that seal bounded <!-- claim:max_chunk_entries -->4,096<!-- /claim -->-entry immutable micro-segments (`partChunk`) backed by flat `[]parser.LogEntry` slices, sorted inverted posting slices (`byLevel`, `byService`, `bySvcLevel`), and a zero-pointer (`noscan`) arena-backed doubly-linked SkipList (`ScanRangeAscIdx` / `ScanRangeDescIdx` in $O(\log N + K)$ time, capped at <!-- claim:max_query_limit -->10,000<!-- /claim --> results per query, with per-shard xorshift\* tower-height PRNGs likewise seeded via the `0x9e3779b97f4a7c15` golden-ratio Weyl counter).
    - Each indexed entry accounts for <!-- claim:entry_base_overhead_bytes -->360 bytes<!-- /claim --> of base struct/index overhead plus payload length; the server sets a <!-- claim:go_runtime_memory_limit_mb -->480 MB<!-- /claim --> Go runtime GC ceiling (`DefaultMaxMemoryBytes` fallback: <!-- claim:default_max_memory_mb -->512 MB<!-- /claim -->).
    - For memory budgets $\ge$ <!-- claim:gc_watermark_threshold_mb -->64 MB<!-- /claim -->, eviction triggers at <!-- claim:eviction_trigger_pct -->52%<!-- /claim --> of `MaxMemoryBytes` and evicts down to <!-- claim:eviction_target_pct -->45%<!-- /claim --> to reserve GC sweep headroom; smaller budgets trigger at `MaxMemoryBytes` and evict down to <!-- claim:small_budget_eviction_target_pct -->85%<!-- /claim -->. `evictOldestPartitions` drops the oldest time bucket in $O(P)$ over active buckets (or pointer-drops the oldest sealed micro-segments in the active bucket; for tiny single-bucket budgets before any chunk seals, it falls back under `sh.mu` to `EvictOldestIdx` tombstoning and `compactActivePostings`).
 3. **Amnesiac Purge (`Burn`):**

@@ -36,6 +36,7 @@ const (
 
 var (
 	activeTCPConnections atomic.Int64
+	tcpJitterSeed        atomic.Uint64
 	udpBufPool           = sync.Pool{
 		New: func() any {
 			b := make([]byte, 65536) // 64 KB UDP buffer
@@ -298,6 +299,21 @@ func handleTCPConnection(conn net.Conn, eng *engine.Engine, maxLineLen int) {
 	reader := bufio.NewReaderSize(conn, 4096)
 	var acc []byte
 	truncated := false
+	backpressureDrops := 0
+	jitter := tcpJitterSeed.Add(0x9e3779b97f4a7c15) | 1
+	ingestLine := func(b []byte) {
+		if ingestErr := eng.Ingest(b); errors.Is(ingestErr, engine.ErrBackpressure) {
+			backpressureDrops++
+			if backpressureDrops >= 2 {
+				backpressureDrops = 0
+				jitter ^= jitter << 13
+				jitter ^= jitter >> 7
+				jitter ^= jitter << 17
+				// Jittered 800µs..1823µs backoff paces saturated senders without lockstep wakeups
+				time.Sleep(time.Duration(800+(jitter&1023)) * time.Microsecond)
+			}
+		}
+	}
 	for {
 		chunk, err := reader.ReadSlice('\n')
 		if len(acc) == 0 && !errors.Is(err, bufio.ErrBufferFull) {
@@ -306,7 +322,7 @@ func handleTCPConnection(conn net.Conn, eng *engine.Engine, maxLineLen int) {
 				parser.RecordTruncatedLine()
 			}
 			if len(chunk) > 0 {
-				_ = eng.Ingest(chunk)
+				ingestLine(chunk)
 			}
 			if err != nil {
 				break
@@ -331,7 +347,7 @@ func handleTCPConnection(conn net.Conn, eng *engine.Engine, maxLineLen int) {
 			parser.RecordTruncatedLine()
 		}
 		if len(acc) > 0 {
-			_ = eng.Ingest(acc)
+			ingestLine(acc)
 		}
 		acc, truncated = nil, false
 		if err != nil {

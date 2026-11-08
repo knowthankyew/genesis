@@ -304,3 +304,236 @@ func TestStoreIndex_Burn(t *testing.T) {
 		t.Errorf("expected 0 query results after burn, got %d", len(results))
 	}
 }
+
+func TestStoreIndex_SealedChunksOracle(t *testing.T) {
+	rnd := rand.New(rand.NewSource(99))
+	idx := NewStoreIndex(IndexConfig{
+		MaxMemoryBytes:    256 * 1024 * 1024,
+		BucketDurationSec: 5,
+	})
+
+	services := []string{"auth-api", "payment-svc", "order-router", "user-profile", "notification-gw"}
+	levels := []string{"DEBUG", "INFO", "WARN", "ERROR"}
+
+	// 120,000 entries in two 5s buckets -> ~7,500/shard/bucket: seals one 4096-entry chunk per shard per bucket + leaves active chunks
+	const totalEntries = 120000
+	brute := make([]parser.LogEntry, totalEntries)
+	baseTime := int64(1730000000)
+
+	for i := 0; i < totalEntries; i++ {
+		entry := parser.LogEntry{
+			ID:        uint64(i + 1),
+			Timestamp: baseTime + int64(rnd.Intn(10)),
+			Service:   services[rnd.Intn(len(services))],
+			Level:     levels[rnd.Intn(len(levels))],
+			TraceID:   fmt.Sprintf("tr-%d", i+1),
+			Message:   fmt.Sprintf("sealed oracle msg %d", i%17),
+			SizeBytes: 128,
+		}
+		brute[i] = entry
+		idx.Insert(entry)
+	}
+
+	orders := []string{"asc", "desc"}
+	for q := 0; q < 200; q++ {
+		start := baseTime + int64(rnd.Intn(8))
+		end := start + int64(rnd.Intn(5))
+		order := orders[rnd.Intn(len(orders))]
+		limit := rnd.Intn(60) + 1
+
+		var filterService, filterLevel, filterGrep string
+		if rnd.Float64() < 0.7 {
+			filterService = services[rnd.Intn(len(services))]
+		}
+		if rnd.Float64() < 0.7 {
+			filterLevel = levels[rnd.Intn(len(levels))]
+		}
+		if rnd.Float64() < 0.25 {
+			filterGrep = "msg 7"
+		}
+
+		var expected []parser.LogEntry
+		for _, r := range brute {
+			if r.Timestamp < start || r.Timestamp > end {
+				continue
+			}
+			if filterService != "" && r.Service != filterService {
+				continue
+			}
+			if filterLevel != "" && r.Level != filterLevel {
+				continue
+			}
+			if filterGrep != "" && r.Message != "sealed oracle msg 7" {
+				continue
+			}
+			expected = append(expected, r)
+		}
+
+		if order == "desc" {
+			sort.Slice(expected, func(i, j int) bool {
+				if expected[i].Timestamp == expected[j].Timestamp {
+					return expected[i].ID > expected[j].ID
+				}
+				return expected[i].Timestamp > expected[j].Timestamp
+			})
+		} else {
+			sort.Slice(expected, func(i, j int) bool {
+				if expected[i].Timestamp == expected[j].Timestamp {
+					return expected[i].ID < expected[j].ID
+				}
+				return expected[i].Timestamp < expected[j].Timestamp
+			})
+		}
+		if len(expected) > limit {
+			expected = expected[:limit]
+		}
+
+		actual := idx.Query(start, end, filterLevel, filterService, filterGrep, limit, order)
+		if len(actual) != len(expected) {
+			t.Fatalf("SealedOracle query %d count mismatch: expected %d, got %d", q, len(expected), len(actual))
+		}
+		for i := range actual {
+			if actual[i].ID != expected[i].ID || actual[i].Timestamp != expected[i].Timestamp {
+				t.Fatalf("SealedOracle query %d item %d mismatch: expected (%d,%d), got (%d,%d)",
+					q, i, expected[i].Timestamp, expected[i].ID, actual[i].Timestamp, actual[i].ID)
+			}
+		}
+	}
+}
+
+func TestStoreIndex_ConcurrentSealNoMissedChunk(t *testing.T) {
+	idx := NewStoreIndex(IndexConfig{
+		MaxMemoryBytes:    256 * 1024 * 1024,
+		BucketDurationSec: 60,
+	})
+
+	const baseTs = int64(1730000100)
+	const totalPerShard = 9000 // Seals two 4096-entry chunks on shard 1 and leaves 808 active
+
+	done := make(chan struct{})
+	errCh := make(chan error, 8)
+	var wg sync.WaitGroup
+
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				res := idx.Query(baseTs, baseTs, "INFO", "auth-api", "", MaxQueryLimit, "asc")
+				for j, item := range res {
+					wantID := uint64(1 + j*NumPartitionShards)
+					if item.ID != wantID {
+						select {
+						case errCh <- fmt.Errorf("gap or duplicate during chunk seal at index %d: got ID %d, want %d (len=%d)", j, item.ID, wantID, len(res)):
+						default:
+						}
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	for i := 0; i < totalPerShard; i++ {
+		idx.Insert(parser.LogEntry{
+			ID:        uint64(1 + i*NumPartitionShards),
+			Timestamp: baseTs,
+			Service:   "auth-api",
+			Level:     "INFO",
+			TraceID:   "tr-seal",
+			Message:   "seal transition check",
+			SizeBytes: 128,
+		})
+	}
+	close(done)
+	wg.Wait()
+
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	default:
+	}
+
+	final := idx.Query(baseTs, baseTs, "INFO", "auth-api", "", MaxQueryLimit, "asc")
+	if len(final) != totalPerShard {
+		t.Fatalf("expected %d final entries, got %d", totalPerShard, len(final))
+	}
+}
+
+func TestStoreIndex_ConcurrentEvictionAndBurnAccountingNoDrift(t *testing.T) {
+	// Case 1: Multi-bucket + sealed-chunk eviction + concurrent Burn()
+	idx := NewStoreIndex(IndexConfig{
+		MaxMemoryBytes:    2 * 1024 * 1024,
+		BucketDurationSec: 5,
+	})
+
+	var wg sync.WaitGroup
+	for w := 0; w < 8; w++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < 12000; i++ {
+				id := uint64(worker*12000 + i + 1)
+				idx.Insert(parser.LogEntry{
+					ID:        id,
+					Timestamp: 1730000000 + int64(i/400),
+					Service:   "auth-api",
+					Level:     "INFO",
+					TraceID:   "tr-acct",
+					Message:   "accounting check",
+					SizeBytes: 512,
+				})
+				if worker == 0 && i == 6000 {
+					idx.Burn()
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	if live, cur := idx.LivePartitionBytes(), idx.CurrentMemoryUsage(); live != cur {
+		t.Fatalf("multi-bucket accounting drift: LivePartitionBytes=%d, CurrentMemoryUsage=%d", live, cur)
+	}
+	idx.Burn()
+	if cur := idx.CurrentMemoryUsage(); cur != 0 {
+		t.Fatalf("expected CurrentMemoryUsage=0 after Burn(), got %d", cur)
+	}
+
+	// Case 2: Tiny single-bucket tombstone fallback before any 4096-entry chunk seals
+	tiny := NewStoreIndex(IndexConfig{
+		MaxMemoryBytes:    32 * 1024,
+		BucketDurationSec: 3600,
+	})
+	for w := 0; w < 4; w++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				id := uint64(worker*500 + i + 1)
+				tiny.Insert(parser.LogEntry{
+					ID:        id,
+					Timestamp: 1730000000 + int64(i%10),
+					Service:   "payment-svc",
+					Level:     "WARN",
+					TraceID:   "tr-tiny",
+					Message:   "tiny fallback check",
+					SizeBytes: 512,
+				})
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	if live, cur := tiny.LivePartitionBytes(), tiny.CurrentMemoryUsage(); live != cur {
+		t.Fatalf("tiny-bucket accounting drift: LivePartitionBytes=%d, CurrentMemoryUsage=%d", live, cur)
+	}
+	tiny.Burn()
+	if cur := tiny.CurrentMemoryUsage(); cur != 0 {
+		t.Fatalf("expected tiny CurrentMemoryUsage=0 after Burn(), got %d", cur)
+	}
+}

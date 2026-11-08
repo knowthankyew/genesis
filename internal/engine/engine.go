@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,19 @@ import (
 var (
 	ErrBackpressure = errors.New("pipeline backpressure: queue saturated")
 	ErrStopped      = errors.New("engine is stopped or closing")
+
+	rawLinePool = sync.Pool{
+		New: func() any {
+			b := make([]byte, 0, 160)
+			return &b
+		},
+	}
+
+	queryBufPool = sync.Pool{
+		New: func() any {
+			return bytes.NewBuffer(make([]byte, 0, 16*1024))
+		},
+	}
 )
 
 type EngineConfig struct {
@@ -65,8 +79,8 @@ type tailSubscriber struct {
 
 type Engine struct {
 	index         *index.StoreIndex
-	normalCh      chan []byte
-	priorityCh    chan []byte
+	normalCh      chan *[]byte
+	priorityCh    chan *[]byte
 	numWorkers    int
 	maxLineLength int
 	idCounter     atomic.Uint64
@@ -100,7 +114,7 @@ func NewEngine(cfg EngineConfig) *Engine {
 		cfg.PriorityQueueCap = 50000
 	}
 	if cfg.NumWorkers <= 0 {
-		cfg.NumWorkers = runtime.NumCPU() * 2
+		cfg.NumWorkers = max(2, runtime.NumCPU()/8)
 	}
 	if cfg.MaxLineLength <= 0 {
 		cfg.MaxLineLength = parser.DefaultMaxLineLength
@@ -120,8 +134,8 @@ func NewEngine(cfg EngineConfig) *Engine {
 
 	e := &Engine{
 		index:         idx,
-		normalCh:      make(chan []byte, cfg.QueueCapacity),
-		priorityCh:    make(chan []byte, cfg.PriorityQueueCap),
+		normalCh:      make(chan *[]byte, cfg.QueueCapacity),
+		priorityCh:    make(chan *[]byte, cfg.PriorityQueueCap),
 		numWorkers:    cfg.NumWorkers,
 		maxLineLength: cfg.MaxLineLength,
 		startTime:     time.Now(),
@@ -143,29 +157,37 @@ func (e *Engine) startWorkers() {
 	}
 }
 
+func (e *Engine) consumeBuf(bufPtr *[]byte) {
+	e.processRawLog(*bufPtr)
+	if e.store == nil && cap(*bufPtr) <= 512 {
+		*bufPtr = (*bufPtr)[:0]
+		rawLinePool.Put(bufPtr)
+	}
+}
+
 func (e *Engine) workerLoop() {
 	defer e.wg.Done()
 
 	for {
 		select {
-		case raw := <-e.priorityCh:
-			e.processRawLog(raw)
+		case bufPtr := <-e.priorityCh:
+			e.consumeBuf(bufPtr)
 		default:
 			select {
 			case <-e.ctx.Done():
 				// Drain remaining priority items before exiting
 				for {
 					select {
-					case raw := <-e.priorityCh:
-						e.processRawLog(raw)
+					case bufPtr := <-e.priorityCh:
+						e.consumeBuf(bufPtr)
 					default:
 						return
 					}
 				}
-			case raw := <-e.priorityCh:
-				e.processRawLog(raw)
-			case raw := <-e.normalCh:
-				e.processRawLog(raw)
+			case bufPtr := <-e.priorityCh:
+				e.consumeBuf(bufPtr)
+			case bufPtr := <-e.normalCh:
+				e.consumeBuf(bufPtr)
 			}
 		}
 	}
@@ -332,35 +354,59 @@ func (e *Engine) Ingest(raw []byte) error {
 
 	e.receivedCount.Add(1)
 
+	// Route based on parsed log level before allocating payload (Fix #3 + fast-drop zero-alloc)
+	level := parser.ExtractLevel(raw)
+	isCritical := level == "ERROR" || level == "FATAL"
+
+	if !isCritical && len(e.normalCh) >= cap(e.normalCh) {
+		e.dropped.QueueFull.Add(1)
+		return ErrBackpressure
+	}
+	if isCritical && len(e.priorityCh) >= cap(e.priorityCh) && len(e.normalCh) >= cap(e.normalCh) {
+		e.dropped.QueueFull.Add(1)
+		return ErrBackpressure
+	}
+
 	// Ingest-time redaction if enabled
 	if e.redactor != nil {
 		raw = e.redactor.Redact(raw)
 	}
 
-	payload := make([]byte, len(raw))
-	copy(payload, raw)
+	var bufPtr *[]byte
+	if e.store == nil {
+		bufPtr = rawLinePool.Get().(*[]byte)
+		*bufPtr = append((*bufPtr)[:0], raw...)
+	} else {
+		payload := make([]byte, len(raw))
+		copy(payload, raw)
+		bufPtr = &payload
+	}
 
-	// Route based on parsed log level (Fix #3)
-	level := parser.ExtractLevel(payload)
-	isCritical := level == "ERROR" || level == "FATAL"
+	recycleOnDrop := func() {
+		if e.store == nil && cap(*bufPtr) <= 512 {
+			*bufPtr = (*bufPtr)[:0]
+			rawLinePool.Put(bufPtr)
+		}
+	}
 
 	if isCritical {
 		select {
-		case e.priorityCh <- payload:
+		case e.priorityCh <- bufPtr:
 			e.priorityCount.Add(1)
 			if e.store != nil {
-				_ = e.store.Append(payload)
+				_ = e.store.Append(*bufPtr)
 			}
 			return nil
 		default:
 			// Priority queue full: fall back non-blockingly to normalCh so single-reader UDP loops never stall
 			select {
-			case e.normalCh <- payload:
+			case e.normalCh <- bufPtr:
 				if e.store != nil {
-					_ = e.store.Append(payload)
+					_ = e.store.Append(*bufPtr)
 				}
 				return nil
 			default:
+				recycleOnDrop()
 				e.dropped.QueueFull.Add(1)
 				return ErrBackpressure
 			}
@@ -369,12 +415,13 @@ func (e *Engine) Ingest(raw []byte) error {
 
 	// Normal lane
 	select {
-	case e.normalCh <- payload:
+	case e.normalCh <- bufPtr:
 		if e.store != nil {
-			_ = e.store.Append(payload)
+			_ = e.store.Append(*bufPtr)
 		}
 		return nil
 	default:
+		recycleOnDrop()
 		e.dropped.QueueFull.Add(1)
 		return ErrBackpressure
 	}
@@ -458,8 +505,25 @@ func (e *Engine) HandleQuery(w http.ResponseWriter, r *http.Request) {
 		Logs:      entries,
 	}
 
+	buf := queryBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	if err := json.NewEncoder(buf).Encode(resp); err != nil {
+		if buf.Cap() <= 64*1024 {
+			buf.Reset()
+			queryBufPool.Put(buf)
+		}
+		http.Error(w, `{"error":"encoding failure"}`, http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
+	w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+	_, _ = w.Write(buf.Bytes())
+
+	if buf.Cap() <= 64*1024 {
+		buf.Reset()
+		queryBufPool.Put(buf)
+	}
 }
 
 // HandleStats returns full pipeline statistics (Fix #10)

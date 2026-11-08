@@ -28,8 +28,8 @@ var (
 )
 
 var (
-	servicePool     sync.Map
-	servicePoolSize atomic.Int64
+	servicePoolMu sync.RWMutex
+	servicePool   = make(map[string]string, 64)
 )
 var truncatedLines atomic.Uint64
 
@@ -44,15 +44,26 @@ func RecordTruncatedLine() {
 }
 
 func internService(b []byte) string {
-	if s, ok := servicePool.Load(string(b)); ok {
-		return s.(string)
+	servicePoolMu.RLock()
+	s, ok := servicePool[string(b)]
+	full := len(servicePool) >= MaxServicePoolSize
+	servicePoolMu.RUnlock()
+	if ok {
+		return s
 	}
-	s := string(b)
-	if servicePoolSize.Load() < MaxServicePoolSize {
-		if _, loaded := servicePool.LoadOrStore(s, s); !loaded {
-			servicePoolSize.Add(1)
-		}
+	s = string(b)
+	if full {
+		return s
 	}
+	servicePoolMu.Lock()
+	if existing, exists := servicePool[s]; exists {
+		servicePoolMu.Unlock()
+		return existing
+	}
+	if len(servicePool) < MaxServicePoolSize {
+		servicePool[s] = s
+	}
+	servicePoolMu.Unlock()
 	return s
 }
 
@@ -212,13 +223,14 @@ func ParseLogLine(id uint64, raw []byte, maxLineLen int) (LogEntry, error) {
 	level := internLevel(rest[:idx3])
 	rest = rest[idx3+1:]
 
-	// Field 4: TraceID
+	// Field 4: TraceID & Message (single backing string allocation)
 	idx4 := bytes.IndexByte(rest, '|')
 	if idx4 == -1 {
 		return LogEntry{}, ErrMalformedLog
 	}
-	traceID := string(rest[:idx4])
-	message := string(rest[idx4+1:])
+	tail := string(rest)
+	traceID := tail[:idx4]
+	message := tail[idx4+1:]
 
 	// Calibrated memory overhead per entry in 64-bit runtime:
 	// - LogEntry struct on heap / map slot: ~88 bytes

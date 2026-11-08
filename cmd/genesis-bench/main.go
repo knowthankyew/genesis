@@ -158,16 +158,19 @@ func main() {
 
 				t0 := time.Now()
 				resp, err := httpClient.Get(url)
-				lat := time.Since(t0)
-
 				if err != nil {
 					queryErrors.Add(1)
 					continue
 				}
 
 				if resp.StatusCode == http.StatusOK {
-					_, _ = io.Copy(io.Discard, resp.Body)
+					_, copyErr := io.Copy(io.Discard, resp.Body)
 					_ = resp.Body.Close()
+					lat := time.Since(t0)
+					if copyErr != nil {
+						queryErrors.Add(1)
+						continue
+					}
 
 					queryLatenciesMu.Lock()
 					queryLatencies = append(queryLatencies, lat)

@@ -66,4 +66,5 @@ This document is governed by an automated **180-day freshness cadence** tracked 
 Our commitment is intellectual honesty:
 * If any alternative listed here has evolved to address a limitation noted above, please open an issue or PR with the updated version details.
 * If a new local-first or ephemeral logging engine emerges that developers evaluate alongside Genesis, we actively welcome its addition to this comparison.
-* We re-evaluate all listed projects semi-annually against their latest stable releases.
+* We re-evaluate all listed projects semi-annually against their latest stable releases, recording an audit note of any material changes to cited trade-offs.
+* **Radar & Emerging Tools:** We monitor emerging single-binary and embedded-database experiments (such as SQLite-based loggers, LiteLog, Glintlog, or DuckDB/Parquet engines) for evaluation in future review cycles.

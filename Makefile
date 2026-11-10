@@ -1,4 +1,4 @@
-.PHONY: all build test race lint bench-report clean docker-build
+.PHONY: all build test race lint bench-report clean docker-build demo-record check-demo-prereqs
 
 all: build
 
@@ -39,3 +39,10 @@ clean:
 
 docker-build:
 	docker build -t genesis:latest .
+
+check-demo-prereqs:
+	@command -v node >/dev/null 2>&1 || { echo "❌ Node.js is required for demo recording. Please install node." >&2; exit 1; }
+	@node -e "try { require('playwright'); } catch { try { require('../node_modules/playwright'); } catch { process.exit(1); } }" 2>/dev/null || { echo "❌ Playwright is required for demo recording. Run 'npm install' in portfolio root." >&2; exit 1; }
+
+demo-record: check-demo-prereqs build
+	@./scripts/record-demo.sh

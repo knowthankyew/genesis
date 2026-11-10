@@ -6,7 +6,13 @@
 
 Genesis is a single-binary, local-first telemetry engine with zero external network egress. It sustains <!-- claim:bench_throughput_lps -->1,046,322.42 lines/sec<!-- /claim --> TCP log ingestion while also supporting Syslog (RFC 5424/3164), JSON Lines, pipe format, and process output streams, keeping a bounded recent window in volatile RAM with <!-- claim:bench_p50_us -->416.46 µs<!-- /claim --> median query latency, an embedded zero-CDN web UI, and an instant amnesiac purge.
 
-![Genesis Live Demo — Multi-Format SSE Streaming, Severity & Trace Filtering, Grep Search, and Amnesiac Burn](docs/assets/genesis-demo.gif)
+---
+
+## 📹 Live Demonstration: The Digital Exhaust & Amnesiac Burn
+
+![Genesis Live Demo — High-Volume Telemetry Streaming, Search Filtering, and Amnesiac Purge](docs/assets/genesis-demo.gif)
+
+*Watch Genesis ingest 25,000+ digital telemetry events (mobile background syncs, ad tracking beacons, IoT sensor pings, and microservice APIs) in milliseconds, filter down to a critical security incident, and execute an atomic Amnesiac Purge that vaporizes all records from RAM with zero traces on disk.*
 
 ---
 

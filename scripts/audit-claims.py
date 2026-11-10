@@ -29,6 +29,9 @@ DIAGRAM_CODE_PATH_RE = re.compile(r"<code>([^<>\s]+)</code>")
 DIAGRAM_PATH_PREFIXES = ("cmd/", "internal/", "scripts/", "docs/", ".github/", "tests/")
 REQUIRED_DIAGRAM_DOC = "docs/ARCHITECTURE.md"
 
+LANDSCAPE_META_RE = re.compile(r"<!--\s*landscape-meta\b(.*?)-->", re.DOTALL)
+REQUIRED_LANDSCAPE_DOC = "docs/ALTERNATIVES.md"
+
 CANONICAL_MIT_SHA256 = "49f4b2686067fc56489ee83e4280c72a38b5c09d275bf352f5247d90572c8b9b"
 SPDX_PREFIX = "SPDX" + "-License-Identifier:"
 SPDX_RE = re.compile(re.escape(SPDX_PREFIX) + r"\s*([^\r\n]+)")
@@ -186,6 +189,65 @@ def audit_architecture_diagrams(errors: list[str]) -> None:
             targets.append(doc)
     for doc in targets:
         _audit_diagram_doc(doc, errors)
+
+
+def parse_landscape_meta(text: str) -> dict | None:
+    m = LANDSCAPE_META_RE.search(text)
+    if not m:
+        return None
+    meta: dict = {}
+    for line in m.group(1).splitlines():
+        key, sep, val = line.partition(":")
+        if sep:
+            meta[key.strip()] = val.strip()
+    versions = meta.get("reviewed-versions", "")
+    if versions.startswith("[") and versions.endswith("]"):
+        meta["reviewed-versions"] = [v.strip() for v in versions[1:-1].split(",") if v.strip()]
+    else:
+        meta["reviewed-versions"] = []
+    return meta
+
+
+def audit_landscape_freshness(errors: list[str]) -> None:
+    doc_path = REPO_ROOT / REQUIRED_LANDSCAPE_DOC
+    if not doc_path.is_file():
+        errors.append(f"Landscape gate: required document {REQUIRED_LANDSCAPE_DOC} not found")
+        return
+    text = doc_path.read_text(encoding="utf-8")
+    meta = parse_landscape_meta(text)
+    if not meta:
+        errors.append(f"Landscape gate ({REQUIRED_LANDSCAPE_DOC}): missing <!-- landscape-meta ... --> header")
+        return
+
+    raw_date = meta.get("last-reviewed", "")
+    try:
+        rev_date = date.fromisoformat(raw_date)
+        max_allowed_date = datetime.now(timezone.utc).date() + timedelta(days=1)
+        if rev_date > max_allowed_date:
+            errors.append(f"Landscape gate ({REQUIRED_LANDSCAPE_DOC}): last-reviewed {raw_date} is in the future")
+    except ValueError:
+        errors.append(f"Landscape gate ({REQUIRED_LANDSCAPE_DOC}): last-reviewed '{raw_date}' is not an ISO date (YYYY-MM-DD)")
+        return
+
+    try:
+        cadence_days = int(meta.get("review-cadence-days", "180"))
+    except ValueError:
+        cadence_days = 180
+
+    today = datetime.now(timezone.utc).date()
+    elapsed = (today - rev_date).days
+    if elapsed > cadence_days:
+        errors.append(
+            f"Landscape gate ({REQUIRED_LANDSCAPE_DOC}): STALE. Last reviewed {raw_date} "
+            f"({elapsed} days ago, exceeds cadence of {cadence_days} days). "
+            f"Review external alternatives, verify claims against latest releases, and update last-reviewed."
+        )
+
+    versions = meta.get("reviewed-versions", [])
+    if len(versions) < 3:
+        errors.append(
+            f"Landscape gate ({REQUIRED_LANDSCAPE_DOC}): reviewed-versions list must contain at least 3 pinned competitor versions"
+        )
 
 
 def audit_license_and_sbom(errors: list[str]) -> None:
@@ -349,6 +411,12 @@ def main() -> int:
     audit_genesis_invariants(errors)
     if len(errors) == before_inv:
         print("  ✓ Zero external Go dependencies, Web UI zero-egress, and loopback/DELETE-burn/SSE-deadline/no-CORS invariants verified")
+
+    # 7. Competitive landscape & ALTERNATIVES.md freshness gate
+    before_landscape = len(errors)
+    audit_landscape_freshness(errors)
+    if len(errors) == before_landscape:
+        print("  ✓ Competitive landscape (docs/ALTERNATIVES.md) metadata & 180-day freshness verified")
 
     if errors:
         print(f"\n[FAIL] {len(errors)} invariant violation(s) detected:", file=sys.stderr)

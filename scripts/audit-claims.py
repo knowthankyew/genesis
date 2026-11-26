@@ -32,6 +32,27 @@ REQUIRED_DIAGRAM_DOC = "docs/ARCHITECTURE.md"
 LANDSCAPE_META_RE = re.compile(r"<!--\s*landscape-meta\b(.*?)-->", re.DOTALL)
 REQUIRED_LANDSCAPE_DOC = "docs/ALTERNATIVES.md"
 
+# Genesis server core packages must never initiate outbound TCP/UDP/HTTP connections
+# (CLI client commands in internal/cli/ and benchmark harness in cmd/genesis-bench/ are separate).
+SERVER_CORE_PACKAGES = (
+    "internal/config",
+    "internal/engine",
+    "internal/index",
+    "internal/parser",
+    "internal/redact",
+    "internal/security",
+    "internal/storage",
+    "internal/ui",
+)
+
+RAW_GO_NETWORK_RE = re.compile(
+    r"\bnet\.Dial(?:Timeout|TCP|UDP|IP|Unix)?\b"
+    r"|(?<!\*)\bnet\.Dialer\b"
+    r"|(?<!\*)\bhttp\.(?:Client|Transport)\b"
+    r"|\bhttp\.Default(?:Client|Transport)\b"
+    r"|\bhttp\.(?:Get|Head|Post|PostForm)\s*\("
+)
+
 CANONICAL_MIT_SHA256 = "49f4b2686067fc56489ee83e4280c72a38b5c09d275bf352f5247d90572c8b9b"
 SPDX_PREFIX = "SPDX" + "-License-Identifier:"
 SPDX_RE = re.compile(re.escape(SPDX_PREFIX) + r"\s*([^\r\n]+)")
@@ -73,24 +94,47 @@ def get_docs_to_scan() -> list[Path]:
 
 def audit_vocabulary(errors: list[str]) -> None:
     registry_path = REPO_ROOT / "docs" / "claims_registry.json"
-    registered_docs = {"README.md", "NOTICE.md", "SECURITY.md", "docs/ARCHITECTURE.md", "docs/DECISIONS.md"}
+    reg_ok, reg_errs = sync_docs.validate_claims_registry(registry_path, repo_root=REPO_ROOT)
+    if not reg_ok:
+        for e in reg_errs:
+            errors.append(f"Registry hygiene violation: {e}")
+
+    registered_docs = {
+        "README.md",
+        "NOTICE.md",
+        "SECURITY.md",
+        "docs/ARCHITECTURE.md",
+        "docs/DECISIONS.md",
+        "docs/ALTERNATIVES.md",
+    }
     for doc in get_docs_to_scan():
         content = doc.read_text(encoding="utf-8")
         rel_name = str(doc.relative_to(REPO_ROOT)).replace("\\", "/")
 
         if rel_name in registered_docs:
-            ok, word_errs = sync_docs.lint_prose_and_words(content, rel_name, registry_path=registry_path)
+            ok, word_errs = sync_docs.lint_prose_and_words(
+                content, rel_name, registry_path=registry_path, repo_root=REPO_ROOT
+            )
             if not ok:
                 for e in word_errs:
-                    errors.append(f"Vocabulary violation: {e}")
+                    errors.append(f"Vocabulary/Path violation: {e}")
         else:
             for idx, line in enumerate(content.splitlines(), 1):
+                if sync_docs._has_personal_host_path_text(line):
+                    errors.append(f"Vocabulary/Path violation in {rel_name}:{idx}: personal host path leak found.")
                 for pat in sync_docs.PROHIBITED_WORDS:
                     if pat.search(line):
                         errors.append(
                             f"Vocabulary violation in {rel_name}:{idx}: "
                             f"Prohibited term matching '{pat.pattern}' found: '{line.strip()}'"
                         )
+
+        m_ok, m_errs = sync_docs.lint_claim_markers_and_regions(
+            content, rel_name, registry_path=registry_path
+        )
+        if not m_ok:
+            for e in m_errs:
+                errors.append(f"Marker/Region violation: {e}")
 
 
 def parse_diagram_meta(text: str) -> dict | None:
@@ -135,10 +179,12 @@ def _audit_diagram_doc(doc: Path, errors: list[str]) -> None:
     covers: list[str] = meta["covers"]
     if not commit:
         errors.append(f"{label}: validated-commit is missing")
+    elif not re.fullmatch(r"[0-9a-fA-F]{7,40}", commit):
+        errors.append(f"{label}: validated-commit '{commit}' must be a valid hex git commit hash")
     if not covers:
         errors.append(f"{label}: covers is missing or not a [a, b, c] list")
 
-    if commit and covers:
+    if commit and re.fullmatch(r"[0-9a-fA-F]{7,40}", commit) and covers:
         resolved = _git("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}")
         if resolved.returncode != 0:
             errors.append(
@@ -208,8 +254,8 @@ def parse_landscape_meta(text: str) -> dict | None:
     return meta
 
 
-def audit_landscape_freshness(errors: list[str]) -> None:
-    doc_path = REPO_ROOT / REQUIRED_LANDSCAPE_DOC
+def audit_landscape_freshness(errors: list[str], repo_root: Path = REPO_ROOT) -> None:
+    doc_path = repo_root / REQUIRED_LANDSCAPE_DOC
     if not doc_path.is_file():
         errors.append(f"Landscape gate: required document {REQUIRED_LANDSCAPE_DOC} not found")
         return
@@ -229,10 +275,19 @@ def audit_landscape_freshness(errors: list[str]) -> None:
         errors.append(f"Landscape gate ({REQUIRED_LANDSCAPE_DOC}): last-reviewed '{raw_date}' is not an ISO date (YYYY-MM-DD)")
         return
 
+    raw_cadence = meta.get("review-cadence-days", "180")
     try:
-        cadence_days = int(meta.get("review-cadence-days", "180"))
+        cadence_days = int(raw_cadence)
     except ValueError:
-        cadence_days = 180
+        errors.append(
+            f"Landscape gate ({REQUIRED_LANDSCAPE_DOC}): review-cadence-days '{raw_cadence}' is not a valid integer"
+        )
+        return
+    if cadence_days < 1 or cadence_days > 180:
+        errors.append(
+            f"Landscape gate ({REQUIRED_LANDSCAPE_DOC}): review-cadence-days must be between 1 and 180, got {cadence_days}"
+        )
+        return
 
     today = datetime.now(timezone.utc).date()
     elapsed = (today - rev_date).days
@@ -293,8 +348,13 @@ def audit_license_and_sbom(errors: list[str]) -> None:
     if not bom_path.is_file():
         errors.append("Governance gate: bom.json is missing")
     else:
+        raw_bom = bom_path.read_text(encoding="utf-8")
+        if sync_docs._has_personal_host_path_text(raw_bom):
+            errors.append("bom.json contains leaked personal host path")
         try:
-            bom = json.loads(bom_path.read_text(encoding="utf-8"))
+            bom = sync_docs._loads_strict_json(raw_bom)
+            if not isinstance(bom, dict):
+                raise ValueError(f"bom.json root must be a JSON object, got {type(bom).__name__}")
             if bom.get("bomFormat") != "CycloneDX" or bom.get("specVersion") != "1.5":
                 errors.append("bom.json must be CycloneDX specVersion 1.5")
             comp = bom.get("metadata", {}).get("component", {})
@@ -306,12 +366,136 @@ def audit_license_and_sbom(errors: list[str]) -> None:
                 "knowthankyew:privacy:telemetry_mode": "memory_only",
                 "knowthankyew:privacy:burn_enabled": "true",
                 "knowthankyew:privacy:third_party_dependencies": "0",
+                "knowthankyew:security:localhost_default_bind": "true",
             }
             for k, v in expected_props.items():
                 if props.get(k) != v:
                     errors.append(f"bom.json property '{k}' expected '{v}', got {props.get(k)!r}")
+
+            internal_dir = REPO_ROOT / "internal"
+            actual_pkgs = {
+                f"internal/{d.name}"
+                for d in internal_dir.iterdir()
+                if d.is_dir() and any(d.glob("*.go"))
+            }
+            sbom_pkgs = {c.get("name") for c in bom.get("components", []) if c.get("name")}
+            missing_pkgs = sorted(actual_pkgs - sbom_pkgs)
+            extra_pkgs = sorted(sbom_pkgs - actual_pkgs)
+            if missing_pkgs or extra_pkgs:
+                errors.append(
+                    f"bom.json internal package parity drift: missing={missing_pkgs}, extra={extra_pkgs}"
+                )
         except Exception as exc:
             errors.append(f"bom.json invalid JSON: {exc}")
+
+
+def strip_go_comments_and_strings(src: str) -> str:
+    """Replace Go comments and string/rune literals with spaces while preserving newlines for line numbers."""
+    out: list[str] = []
+    i = 0
+    n = len(src)
+    state = "code"  # code | line_comment | block_comment | dquote | rawstr | rune
+    while i < n:
+        ch = src[i]
+        nxt = src[i + 1] if i + 1 < n else ""
+        if state == "code":
+            if ch == "/" and nxt == "/":
+                state = "line_comment"
+                out.append("  ")
+                i += 2
+                continue
+            if ch == "/" and nxt == "*":
+                state = "block_comment"
+                out.append("  ")
+                i += 2
+                continue
+            if ch == '"':
+                state = "dquote"
+                out.append(" ")
+                i += 1
+                continue
+            if ch == "`":
+                state = "rawstr"
+                out.append(" ")
+                i += 1
+                continue
+            if ch == "'":
+                state = "rune"
+                out.append(" ")
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        elif state == "line_comment":
+            if ch == "\n":
+                state = "code"
+                out.append("\n")
+            else:
+                out.append(" ")
+            i += 1
+        elif state == "block_comment":
+            if ch == "*" and nxt == "/":
+                state = "code"
+                out.append("  ")
+                i += 2
+            elif ch == "\n":
+                out.append("\n")
+                i += 1
+            else:
+                out.append(" ")
+                i += 1
+        elif state == "dquote":
+            if ch == "\\" and i + 1 < n:
+                out.append("\n" if nxt == "\n" else "  ")
+                i += 2
+            elif ch == '"':
+                state = "code"
+                out.append(" ")
+                i += 1
+            else:
+                out.append("\n" if ch == "\n" else " ")
+                i += 1
+        elif state == "rawstr":
+            if ch == "`":
+                state = "code"
+                out.append(" ")
+            else:
+                out.append("\n" if ch == "\n" else " ")
+            i += 1
+        elif state == "rune":
+            if ch == "\\" and i + 1 < n:
+                out.append("\n" if nxt == "\n" else "  ")
+                i += 2
+            elif ch == "'":
+                state = "code"
+                out.append(" ")
+                i += 1
+            else:
+                out.append("\n" if ch == "\n" else " ")
+                i += 1
+    return "".join(out)
+
+
+def audit_go_server_network_egress_boundary(errors: list[str], repo_root: Path = REPO_ROOT) -> None:
+    """
+    Enforce that zero non-test Go files inside Genesis's server-core packages initiate
+    outbound TCP/UDP/HTTP connections (preserving strict zero-egress server isolation).
+    """
+    for pkg_rel in SERVER_CORE_PACKAGES:
+        pkg_dir = repo_root / pkg_rel
+        if not pkg_dir.is_dir():
+            continue
+        for go_file in sorted(pkg_dir.rglob("*.go")):
+            if go_file.name.endswith("_test.go"):
+                continue
+            rel = go_file.relative_to(repo_root).as_posix()
+            cleaned = strip_go_comments_and_strings(go_file.read_text(encoding="utf-8"))
+            for line_no, line in enumerate(cleaned.splitlines(), 1):
+                for m in RAW_GO_NETWORK_RE.finditer(line):
+                    errors.append(
+                        f"Go server zero-egress boundary violation in {rel}:{line_no}: outbound primitive "
+                        f"'{m.group(0).strip()}' forbidden in server-core package {pkg_rel}"
+                    )
 
 
 def audit_genesis_invariants(errors: list[str]) -> None:
@@ -348,12 +532,49 @@ def audit_genesis_invariants(errors: list[str]) -> None:
             if re.search(pat, html, flags=re.IGNORECASE):
                 errors.append(f"Web UI zero-egress violation in internal/ui/assets/index.html: found {label}")
 
-    # 3. Security & privacy runtime invariants verified via Go test suite
-    run_check(
-        ["go", "test", "./internal/engine", "./internal/ui", "-run", "TestSecurityInvariants|TestUI_ZeroExternalEgress"],
+    # 3. Static Go server-core zero-egress boundary (zero outbound dialers/clients in server packages)
+    audit_go_server_network_egress_boundary(errors, repo_root=REPO_ROOT)
+
+    # 4. Security & privacy runtime invariants verified via Go test suite (assert each expected test actually passed)
+    expected_invariant_tests = [
+        ("github.com/knowthankyew/genesis/internal/engine", "TestSecurityInvariants_LoopbackAndBurnAndCORS"),
+        ("github.com/knowthankyew/genesis/internal/ui", "TestUI_ZeroExternalEgress"),
+    ]
+    test_names = sorted({t for _, t in expected_invariant_tests})
+    ok_inv, inv_out = run_check(
+        [
+            "go",
+            "test",
+            "-json",
+            "./internal/engine",
+            "./internal/ui",
+            "-run",
+            "^(" + "|".join(test_names) + ")$",
+        ],
         "Go Security & Zero-Egress Invariant Tests",
         errors,
     )
+    if ok_inv:
+        passed_pairs: set[tuple[str, str]] = set()
+        for line in inv_out.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                ev.get("Action") == "pass"
+                and isinstance(ev.get("Package"), str)
+                and isinstance(ev.get("Test"), str)
+            ):
+                passed_pairs.add((ev["Package"], ev["Test"]))
+        missing_tests = [f"{pkg}::{t}" for pkg, t in expected_invariant_tests if (pkg, t) not in passed_pairs]
+        if missing_tests:
+            errors.append(
+                f"Invariant Go test audit missed expected tests (renamed or skipped?): {', '.join(missing_tests)}"
+            )
 
 
 def run_check(cmd: list[str], label: str, errors: list[str]) -> tuple[bool, str]:

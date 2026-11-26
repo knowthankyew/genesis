@@ -221,6 +221,7 @@ class TestClaimsLinter(unittest.TestCase):
                 ("<!-- claim:bench_p50_us -->10", "unclosed"),
                 ("orphan <!-- /claim -->", "orphan closing"),
                 ("<!-- BEGIN_EMPIRICAL -->\n| A | B | C |\n", "unbalanced empirical delimiters"),
+                ("`<!-- claim:bench_p50_us -->10<!-- /claim -->`", "inside inline backtick code span"),
             ):
                 ok_m, errs_m = sync_docs.lint_claim_markers_and_regions(bad_doc, "doc.md", registry_path=reg_path)
                 self.assertFalse(ok_m, bad_doc)
